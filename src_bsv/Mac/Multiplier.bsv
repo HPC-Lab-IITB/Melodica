@@ -34,11 +34,11 @@ import Multiplier_Types :: *;
 import Posit_Numeric_Types :: *;
 import Posit_User_Types :: *;
 
-
+(* synthesize *)
 module mkMultiplier (Multiplier_IFC );
 	// make a FIFO to store 
-   	FIFOF #(Outputs_m )  fifo_output_reg <- mkFIFOF;
-	FIFOF #(Stage0_m )  fifo_stage0_reg <- mkFIFOF;
+   	FIFOF #(Outputs_Mul )  fifo_output_reg <- mkFIFOF1;
+	FIFOF #(Stage0_m )  fifo_stage0_reg <- mkFIFOF1;
 	//This function is used to identify nan cases
 
 	function Bit#(1) fv_check_for_nan(PositType z_i1, PositType z_i2,Bit#(1) nan1,Bit#(1) nan2 );
@@ -135,7 +135,7 @@ module mkMultiplier (Multiplier_IFC );
 		//taking care of corner cases for zero infinity flag
 		PositType zero_infinity_flag0 = (((dIn.frac == 0) && dIn.ziflag == REGULAR) ? ZERO :dIn.ziflag);
 		Bit#(FracWidthMul4Plus2) mask1 = frac_change0 <= 0 ?~('1<<abs(frac_change0)+1):?;                
-		let output_regf = Outputs_m {
+		let output_regf = Outputs_Mul {
 			//taking care of corner cases for nan flag 
 			nan_flag :dIn.nanflag,
 			//also include the case when fraction bit msb = 0
@@ -158,7 +158,7 @@ module mkMultiplier (Multiplier_IFC );
 
 interface Server inoutifc;
       interface Put request;
-         method Action put (Inputs_m p);
+         method Action put (Inputs_Mul p);
 		// stage_0: INPUT STAGE and fraction calculation
 		//dIn reads the values from input pipeline register 
       		let dIn = p;

@@ -35,11 +35,12 @@ import Adder_Types :: *;
 import Posit_Numeric_Types :: *;
 import Posit_User_Types :: *;
 
+(* synthesize *)
 module mkAdder (Adder_IFC );
 	// make a FIFO to store data at the end of each stage of the pipeline, and also for input and outputs
-   	FIFOF #(Outputs_a )  fifo_output_reg <- mkFIFOF;
-	FIFOF #(Stage0_a )  fifo_stage0_reg <- mkFIFOF;
-	FIFOF #(Stage1_a )  fifo_stage1_reg <- mkFIFOF;
+   	FIFOF #(Outputs_a )  fifo_output_reg <- mkFIFOF1;
+	FIFOF #(Stage0_a )  fifo_stage0_reg <- mkFIFOF1;
+	FIFOF #(Stage1_a )  fifo_stage1_reg <- mkFIFOF1;
 
 	//This function is used to identify nan cases
 	function Bit#(1) fv_check_for_nan(PositType z_i1, PositType z_i2,Bit#(1) nan1,Bit#(1) nan2 );
