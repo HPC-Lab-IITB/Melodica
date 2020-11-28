@@ -85,24 +85,30 @@ import Posit_Numeric_Types :: *;
 	//Divider
 	typedef  FracWidthMul2Plus1						DividerQuotientBits;//Width of quotient at divider output 
 
-	typedef struct {Bit#(PositWidth) posit_inp1;
-			Bit#(PositWidth) posit_inp2;
+        // Posit number
+        typedef Bit #(PositWidth) Posit;
+
+        // Quire number
+        typedef Bit #(QuireWidth) Quire;
+
+	typedef struct {Posit posit_inp1;
+			Posit posit_inp2;
 			} InputTwoPosit deriving(Bits,FShow);
 
-	typedef struct {Bit#(PositWidth) posit_inp1;
-			Bit#(PositWidth) posit_inp2;
-			Bit#(PositWidth) posit_inp3;
+	typedef struct {Posit posit_inp1;
+			Posit posit_inp2;
+			Posit posit_inp3;
 			} InputThreePosit deriving(Bits,FShow);
 
 	typedef struct {Bit#(1) sign;
 			Bit#(1) nan_flag;
 			PositType zero_infinity_flag;
 			Bit#(CarryWidthPlusIntWidthPlusFracWidthQuire) carry_int_frac;
-			} Quire deriving(Bits,FShow);
+			} Quire_Fields deriving(Bits,FShow);
 	
-	typedef struct {Bit#(QuireWidth) quire_inp;
-			Bit#(PositWidth) posit_inp1;
-			Bit#(PositWidth) posit_inp2;
+	typedef struct {Quire quire_inp;
+			Posit posit_inp1;
+			Posit posit_inp2;
 			} InputQuireTwoPosit deriving(Bits,FShow);
 
 

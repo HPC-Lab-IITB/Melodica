@@ -36,19 +36,10 @@ import Extracter_Types :: *;
 import Posit_Numeric_Types :: *;
 import Posit_User_Types :: *;
 
+(* synthesize *)
 module mkExtracter (Extracter_IFC );
 	// make a FIFO to store data at the end of each stage of the pipeline, and also for input and outputs
-`ifdef PIPELINED
-   	FIFOF #(Output_posit )  fifo_output_reg <- mkFIFOF;
-	FIFOF #(Stage0 )  fifo_stage0_reg <- mkFIFOF;
-	FIFOF #(Stage1 )  fifo_stage1_reg <- mkFIFOF;
-	FIFOF #(Stage2 )  fifo_stage2_reg <- mkFIFOF;
-`else
-   	FIFOF #(Output_posit )  fifo_output_reg <- mkFIFOF1;
-	FIFOF #(Stage0 )  fifo_stage0_reg <- mkFIFOF1;
-	FIFOF #(Stage1 )  fifo_stage1_reg <- mkFIFOF1;
-	FIFOF #(Stage2 )  fifo_stage2_reg <- mkFIFOF1;
-`endif
+   	FIFOF #(Extracted_Posit )  fifo_output_reg <- mkFIFOF;
 	Integer es_int = valueOf(ExpWidth);
 	Integer n_int = valueOf(PositWidth);
 
@@ -87,15 +78,17 @@ module mkExtracter (Extracter_IFC );
 
    interface Server inoutifc;
       interface Put request;
-         method Action put (Input_posit p);
+         method Action put (Posit p);
 		//dIn reads the values from input pipeline register 
       		let dIn = p;
 		//output 10 for zero, 01 for infinity, 00 if none
-		let zero_infinity_flag = fv_special_case(dIn.posit_inp);
+		let zero_infinity_flag = fv_special_case(dIn);
+
+                // XXX can be made into a function
 		//sign bit is 0 when posit is positive else 1 when posit is negative
-		let sign = dIn.posit_inp[n_int-1];
+		let sign = dIn[n_int-1];
 			//new input stage0 is got after removing the sign bit and finding its two's complement if posit is negative from input posit
-		Bit#(PositWidthMinus1) new_inp1 = truncate(dIn.posit_inp);
+		Bit#(PositWidthMinus1) new_inp1 = truncate(dIn);
 		Bit#(PositWidthMinus1) new_inp = (sign == 0 ? new_inp1 : twos_complement(new_inp1));
 
 		//gives the number of leading ones in new input
@@ -118,7 +111,7 @@ module mkExtracter (Extracter_IFC );
 			//the frac size bit mask is decided on the number of bits available for fraction field
 		Bit#(FracWidth) frac = (truncate(new_inp) << fv_frac_shift(iteration)); 		
 
-		let output_regf = Output_posit {
+		let output_regf = Extracted_Posit {
 			//carrying zero and infinity flag forward
                         zero_infinity_flag : zero_infinity_flag,
 			//carrying sign bit fordward
@@ -128,7 +121,9 @@ module mkExtracter (Extracter_IFC );
 			scale : zero_infinity_flag == ZERO?0:((extend(k)<<es_int) + unpack(extend(expo))),
 			//carrying fraction bits fordward
 			frac : zero_infinity_flag == ZERO? unpack(fromInteger(0)):frac};
+
 		fifo_output_reg.enq(output_regf);
+
 		`ifdef RANDOM_PRINT
 			$display("zero_infinity_flag %b",zero_infinity_flag);
 			$display("sign %b",sign);

@@ -37,20 +37,14 @@ import Normalizer_Types :: *;
 import Posit_Numeric_Types :: *;
 import Posit_User_Types :: *;
 
-
+(* synthesize *)
 module mkNormalizer (Normalizer_IFC);
 
     // make a FIFO to store data at the end of each stage of the pipeline, and also for input and outputs
 `ifdef PIPELINED
-    FIFOF #(Output_posit_n )  fifo_output_reg <- mkFIFOF;
-    FIFOF #(Stage0_n )  fifo_stage0_reg <- mkFIFOF;
-    FIFOF #(Stage1_n )  fifo_stage1_reg <- mkFIFOF;
-    FIFOF #(Stage2_n )  fifo_stage2_reg <- mkFIFOF;
+    FIFOF #(Normalized_Posit )  fifo_output_reg <- mkFIFOF;
 `else
-    FIFOF #(Output_posit_n )  fifo_output_reg <- mkFIFOF1;
-    FIFOF #(Stage0_n )  fifo_stage0_reg <- mkFIFOF1;
-    FIFOF #(Stage1_n )  fifo_stage1_reg <- mkFIFOF1;
-    FIFOF #(Stage2_n )  fifo_stage2_reg <- mkFIFOF1;
+    FIFOF #(Normalized_Posit )  fifo_output_reg <- mkFIFOF1;
 `endif
 
     // Posit# (N, ES)
@@ -149,7 +143,7 @@ module mkNormalizer (Normalizer_IFC);
     
 interface Server inoutifc;
 	interface Put request;
-	method Action put (Input_value_n p);
+	method Action put (Prenorm_Posit p);
 		    // interpreting scale value into regime and exponent   
 		//dIn reads the values from input pipeline register 
 		let dIn = p;
@@ -243,7 +237,7 @@ interface Server inoutifc;
 		$display(" shift0 %b shift_2 %b flag_prev_truncate %b flag_equidistant %b",shift0,shift_2,flag_prev_truncate,flag_equidistant);
 		$display(" dIn.zero_infinity_flag %b",dIn.zero_infinity_flag);
 		`endif
-		let output_regf = Output_posit_n {
+		let output_regf = Normalized_Posit {
 		    //carrying nan flag forward
 		    nan_flag : dIn.nan_flag,
 		    // depending on sign bit and zero_infinity_flag giving the final output
