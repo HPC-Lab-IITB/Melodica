@@ -90,10 +90,13 @@ Reg   #(Bool)                 rgSetup        <- mkReg (False);
 `endif
 
 Reg   #(Bool)                 rgGenComplete  <- mkReg (False);
-
+`ifdef RANDOM
+Reg   #(Bit #(PositWidth))   rgCurInput     <- mkReg (0);
+`else
 Reg   #(Bit #(PositWidth))   rgCurInput     <- mkReg (0000000000000100);
 Reg   #(Bit #(PositWidth))   rgCurInput1     <- mkReg (0);
 Reg   #(Bit #(PositWidth))   rgCurInput2     <- mkReg (0000000000000100);
+`endif
 //`ifdef RANDOM
 FIFO  #(Bit #(PositWidth))   ffInputVals    <- mkSizedFIFO (valueOf (
                                                    TAdd# (Pipe_Depth,2)));
@@ -104,9 +107,13 @@ FIFO  #(Bit #(PositWidth))   ffInputVals2    <- mkSizedFIFO (valueOf (
 //`endif
 //`endif
 Reg   #(Bit#(TAdd#(PositWidth,PositWidth)))   wrongOut    <- mkReg (0);
+`ifdef RANDOM
+Reg   #(Bit #(PositWidth))   rgCurOutput    <- mkReg (0);
+`else
 Reg   #(Bit #(PositWidth))   rgCurOutput    <- mkReg (0);
 Reg   #(Bit #(PositWidth))   rgCurOutput1    <- mkReg (0);
 Reg   #(Bit #(PositWidth))   rgCurOutput2    <- mkReg (0);
+`endif
 Reg   #(Bool)                 rgChkComplete  <- mkReg (False);
 Reg   #(Bool)                 rgError        <- mkReg (False);
 
