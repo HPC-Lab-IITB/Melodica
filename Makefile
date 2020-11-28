@@ -263,6 +263,10 @@ multiplier_working_dirs :
 divider_working_dirs :
 	mkdir -p $(VERILOG_CODE_DIR_DIVIDER) $(BUILD_DIR_DIVIDER) $(BUILD_BSIM_DIR_DIVIDER) $(OUTPUT_DIVIDER)
 
+.PHONY: mac_working_dirs
+mac_working_dirs :
+	mkdir -p $(VERILOG_CODE_DIR_MAC) $(BUILD_DIR_MAC) $(BUILD_BSIM_DIR_MAC) $(OUTPUT_MAC)
+
 .PHONY: fma_working_dirs
 fma_working_dirs :
 	mkdir -p $(VERILOG_CODE_DIR_FMA) $(BUILD_DIR_FMA) $(BUILD_BSIM_DIR_FMA) $(OUTPUT_FMA)
@@ -291,7 +295,7 @@ qtop_working_dirs :
 # RTL Generation
 # --------
 .PHONY: rtl
-rtl: rtl_adder rtl_multiplier rtl_divider rtl_fma rtl_fda rtl_qtop rtl_ptoq rtl_ftop rtl_ptof
+rtl: rtl_adder rtl_multiplier rtl_divider rtl_mac rtl_fma rtl_fda rtl_qtop rtl_ptoq rtl_ftop rtl_ptof
 	@echo "Generating Melodica RTL ..."
 
 .PHONY: rtl_adder 
@@ -300,6 +304,9 @@ rtl_adder : adder_working_dirs
 .PHONY: rtl_multiplier 
 rtl_multiplier : multiplier_working_dirs
 	bsc -u -elab -verilog $(BSC_BUILDDIR_MULTIPLIER) -vdir $(VERILOG_CODE_DIR_MULTIPLIER) $(BSC_COMPILATION_FLAGS) -p $(MULTIPLIER_PATH) -g $(PNE_TOPMOD) src_bsv/Multiplier/PNE.bsv
+.PHONY: rtl_mac 
+rtl_mac : mac_working_dirs
+	bsc -u -elab -verilog $(BSC_BUILDDIR_MAC) -vdir $(VERILOG_CODE_DIR_MAC) $(BSC_COMPILATION_FLAGS) -p $(MAC_PATH) -g $(PNE_TOPMOD) src_bsv/Mac/PNE.bsv
 .PHONY: rtl_divider 
 rtl_divider : divider_working_dirs
 	bsc -u -elab -verilog $(BSC_BUILDDIR_DIVIDER) -vdir $(VERILOG_CODE_DIR_DIVIDER) $(BSC_COMPILATION_FLAGS) -p $(DIVIDER_PATH) -g $(PNE_TOPMOD) src_bsv/Divider/PNE.bsv
@@ -345,6 +352,14 @@ sim_multiplier: bsim_multiplier link_multiplier link_multiplier_d simulate_multi
 .PHONY: bsim_multiplier
 bsim_multiplier: multiplier_working_dirs
 	bsc -u -sim $(BSC_BUILDDIR_MULTIPLIER) $(BSC_COMPILATION_FLAGS) -p $(MULTIPLIER_PATH) -g $(TOPMOD) $(Testbench_Path)/Mul_Tb.bsv 
+
+#MAC
+.PHONY: sim_mac
+sim_mac: bsim_mac link_mac link_mac_d simulate_mac
+
+.PHONY: bsim_mac
+bsim_mac: mac_working_dirs
+	bsc -u -sim $(BSC_BUILDDIR_MAC) $(BSC_COMPILATION_FLAGS) -p $(MAC_PATH) -g $(TOPMOD) $(Testbench_Path)/Mac_Tb.bsv 
 
 #DIVIDER
 .PHONY: sim_divider
@@ -674,7 +689,7 @@ simulate_divider:
 .PHONY: simulate_mac
 simulate_mac:
 	@echo Simulation...
-	./$(OUTPUT_MAC)/out_mac 
+	./$(OUTPUT_MAC)/out_mac -V
 	@echo Simulation finished
 
 #FMA
