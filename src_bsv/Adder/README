@@ -1,0 +1,3 @@
+PNE: Standalone adder pipeline with extractor and normalizer
+PNE_PC: Adder pipeline meant to be integrated as part of a bigger system.
+Adder: Adder pipeline logic.

@@ -1,0 +1,3 @@
+PNE: Standalone multiplier pipeline with extractor and normalizer
+PNE_PC: Multiplier pipeline meant to be integrated as part of a bigger system.
+Multiplier: Multiplier pipeline logic.

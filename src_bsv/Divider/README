@@ -1,0 +1,3 @@
+PNE: Standalone Divider pipeline with extractor and normalizer
+PNE_PC: Divider pipeline meant to be integrated as part of a bigger system.
+Divider: Divider pipeline logic.
