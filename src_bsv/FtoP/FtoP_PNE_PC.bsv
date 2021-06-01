@@ -23,42 +23,88 @@ package FtoP_PNE_PC;
 // -----------------------------------------------------------------
 // This package defines:
 //
-//    The different artefacts your package defines. One per line
-//    with a small description per line, please.
-//
+//    mkFtoP_PNE: A float to posit converter
 // -----------------------------------------------------------------
-import FIFOF        :: *;
-import FIFO        :: *;
-import GetPut       :: *;
-import ClientServer :: *;
+
+import FIFO                :: *;
+import GetPut              :: *;
+import ClientServer        :: *;
 
 import Posit_Numeric_Types :: *;
-import Posit_User_Types :: *;
-import FtoP_Extracter ::*;
-import FtoP_Types	:: *;
-import Normalizer_Types	:: *;
+import Posit_User_Types    :: *;
+import Normalizer          :: *;
 
-interface FtoP_PNE ;
-   interface Server #(Bit#(FloatWidth),Prenorm_Posit) compute;
-endinterface
+function Bool fv_check_nan (Bit#(FloatExpWidth) exp, Bit#(FloatFracWidth) frac);
+   return ((exp == '1) && (frac != 0));
+endfunction
 
-module mkFtoP_PNE(FtoP_PNE);
+function PositType fv_check_ziflag (
+     Bit#(FloatExpWidth) exp
+   , Bit#(FloatFracWidth) frac
+);
+   if ((exp == '1) && (frac == 0)) return INF;
+   else if ((exp == 0) && (frac == 0)) return ZERO;
+   else return REGULAR;
+endfunction
 
-FIFO #(Prenorm_Posit) ffO <- mkFIFO;
-FtoP_IFC  fToP <- mkFtoP_Extracter;
+(* synthesize *)
+module mkFtoP_PNE #(Bit #(2) verbosity) (Server #(Bit#(FloatWidth), Prenorm_Posit));
 
-rule rl_out;
-   let fToPOut <- fToP.inoutifc.response.get ();
-   ffO.enq(fToPOut);
-endrule
-interface Server compute;
-      interface Put request;
-         method Action put (Bit#(FloatWidth) p);
-		fToP.inoutifc.request.put(p); 
-         endmethod
-      endinterface
+   FIFO #(Prenorm_Posit) ffO <- mkFIFO1;
+
+   interface Put request;
+      method Action put (Bit#(FloatWidth) p);
+         // Extract sign, exponent and fraction bits
+         Bit #(FloatExpWidth) expo_f_unsigned = (
+            p [valueOf (FloatExpoBegin) : valueOf (FloatFracWidth)]);
+         Int #(FloatExpWidthPlus1) expo_f = unpack({0, expo_f_unsigned});
+         Bit #(FloatFracWidth) frac_f = truncate (p);
+         Bit #(1) sign_f = msb(p);
+
+         // Subtract bias from scale
+         Int #(FloatExpWidthPlus1) floatBias_int = fromInteger (valueOf (FloatBias));
+         Int #(FloatExpWidth) expo_minus_floatBias = truncate(expo_f-floatBias_int);
+
+         // Shift scale and fraction
+         match{.scale, .frac_change} = fv_calculate_scale_shift_fp (expo_minus_floatBias);
+         match{.frac_fp, .frac_msb, .frac_zero} = fv_calculate_frac_fp (frac_f); 
+
+         // Introduce the hidden bit to the fraction
+         Bit #(FracWidthPlus1) frac = {1, frac_fp}; 
+
+         // Is the truncated fraction zero
+         //    (frac_change < 0) : fraction bits lost
+         //    (frac_change > 0) : fraction is maximum as scale is maximum
+         let is_frac_zero = (frac_change < 0) ? pack (unpack (frac[abs(frac_change):0]) == 0)
+                                              : ((frac_change == 0) ? 1'b1
+                                                                    : 1'b0);               
+
+         Bit #(FracWidth) pn_frac = (frac_change < 0) ? truncate (frac >> abs(frac_change) + 1)
+                                                      : ((frac_change == 0) ? truncate(frac)
+                                                                            : '1);
+
+         let pn_frac_msb = (frac_change < 0) ? frac [abs(frac_change)+1]
+                                             : ((frac_change == 0) ? frac_msb
+                                                                   : 1'b1);
+         let pn_frac_zero = (~frac_msb & frac_zero & is_frac_zero);
+
+         // Zero-Infinity special cases
+         let ziflag  = fv_check_ziflag (expo_f_unsigned, frac_f);
+         let nanflag = fv_check_nan    (expo_f_unsigned, frac_f);
+
+         // Package up the pre-normalized posit
+         ffO.enq (Prenorm_Posit {
+              sign      : sign_f
+            , zi        : ziflag
+            , nan       : nanflag
+            , scale     : pack (scale)
+            , frac      : pn_frac
+            , frac_msb  : pn_frac_msb
+            , frac_zero : pn_frac_zero
+         });
+      endmethod
+   endinterface
    interface Get response = toGet (ffO);
-endinterface
 endmodule
 
-endpackage: FtoP_PNE_PC
+endpackage
