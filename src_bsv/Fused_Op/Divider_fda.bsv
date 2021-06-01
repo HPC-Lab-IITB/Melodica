@@ -23,115 +23,144 @@ package Divider_fda;
 // --------------------------------------------------------------
 // This package defines:
 //
-// mkDivider: 2-stage posit Divider
+// mkDivider: 2-stage posit Divider that uses an iterative integer
+//            divide algorithm.
 // --------------------------------------------------------------
 
 import FIFOF        :: *;
 import GetPut       :: *;
 import ClientServer :: *;
 
-import Divider_Types_fda :: *;
 import Posit_Numeric_Types :: *;
 import Posit_User_Types :: *;
 import IntDivide_generic ::*;
 import Common_Fused_Op :: *;
 
-module mkDivider (Divider_IFC );
-`ifdef PIPELINED
-	// make a FIFO to store 
-   	FIFOF #(Outputs_md )  fifo_output_reg <- mkFIFOF;
-	FIFOF #(Stage0_d )  fifo_stage0_reg <- mkFIFOF;
-`else
-	// make a FIFO to store 
-   	FIFOF #(Outputs_md )  fifo_output_reg <- mkFIFOF1;
-	FIFOF #(Stage0_d )  fifo_stage0_reg <- mkFIFOF1;
-`endif
-	//This function is used to identify nan cases
-	IntDivide intDivide <- mkIntDivide;
-	function Bit#(1) check_for_nan_div(PositType z_i1, PositType z_i2,Bit#(1) nan1,Bit#(1) nan2 );
-		if ((z_i1 == INF && z_i2 == ZERO)||(z_i2 == INF && z_i1 == INF)||(nan1 == 1'b1)||(nan2 == 1'b1))
-			//nan flag = 1 when one input is infinity and other zero
-			return 1'b1;
-		else 
-			return 1'b0;
-	endfunction
-	//This function is used to identify zer or infinity cases depending only on the flag value of inputs
+typedef struct {Bit#(1) nan_flag;
+		PositType ziflag;
+		Bit#(1) sign;
+		Int#(ScaleWidthPlus2) scale;} Stage0_d deriving(Bits,FShow);
 
-	function PositType check_for_z_i_div(PositType z_i1, PositType z_i2);
-		if ((z_i1 == ZERO && z_i2 != ZERO) || (z_i1 != INF && z_i2 == INF))
-			// if both inputs are zero then output is zero
-			return ZERO;
-		else if ((z_i1 == INF && z_i2 != INF) || (z_i1 != ZERO && z_i2 == ZERO))
-			// if one of the inputs is infinity then output is infinity
-			return INF;
-		else 
-			return REGULAR;
-	endfunction
-	
-	// --------
-        // Pipeline stages
-	//stage_1: fraction calculation
-	rule stage_1;
-		//dIn reads the values from input pipeline register 
-      		let dIn = fifo_stage0_reg.first;  fifo_stage0_reg.deq;
-		let div_out <- intDivide.inoutifc.response.get();
-		// data to be stored in stored in fifo that will be used in stage 1
-		//put an extra 0 infront of quotient because of the way the multiplier is designed
-		match{.int_frac0,.carry0,.truncated_frac_msb0,.truncated_frac_zero0} = calculate_frac_int({1'b0,div_out.quotient},dIn.scale, div_out.truncated_frac_msb,div_out.truncated_frac_zero);
-		//carry bit extended
-		Bit#(CarryWidthQuire) carry = extend(carry0);
-		//the Quire value is signed extend
-		Bit#(QuireWidth) twos_complement_carry_int_frac = dIn.sign == 1'b0 ? {dIn.sign,carry,int_frac0} : {dIn.sign,twos_complement({carry,int_frac0})};
-		//taking care of corner cases for zero infinity flag
-		PositType zero_infinity_flag0 = twos_complement_carry_int_frac == 0 && dIn.ziflag == REGULAR ? ZERO :dIn.ziflag;
-		let output_regf = Outputs_md {
-		nan_flag : dIn.nan_flag,
-		//also include the case when fraction bit msb = 0
-		zero_infinity_flag : zero_infinity_flag0,
-		quire_md : unpack(twos_complement_carry_int_frac),			
-		truncated_frac_msb : truncated_frac_msb0,//zero_infinity_flag0 == ZERO ? 1'b0 : 
-		truncated_frac_zero : truncated_frac_zero0};//zero_infinity_flag0 == ZERO ? 1'b1 :
-		`ifdef RANDOM_PRINT
-			$display("int_frac0 %b carry0 %h",int_frac0,carry0);
-			$display("twos_complement_carry_int_frac %b",twos_complement_carry_int_frac);
-		`endif
-   		fifo_output_reg.enq(output_regf);
-	endrule
+module mkDivider #(Bit #(2) verbosity) (Divider_IFC );
+   FIFOF #(Quire_Acc)               fifo_output_reg   <- mkFIFOF1;
+   FIFOF #(Stage0_d)                fifo_stage0_reg   <- mkFIFOF1;
 
-interface Server inoutifc;
-      interface Put request;
-         method Action put (Inputs_md p);
-		// stage_0: INPUT STAGE and scale calculation
-		//dIn reads the values from input pipeline register 
-      		let dIn = p;
-		// data to be stored in stored in fifo that will be used in stage 0
-		//see the corner cases due to zero infinity flag
-		let ziflag = check_for_z_i_div(dIn.zero_infinity_flag1,dIn.zero_infinity_flag2);
-		//to see what the hidden bit of each fraction bit will be thus sending that bit for product that can be seen as the two bits of zero flag
-		let zero_flag = dIn.zero_infinity_flag1 == ZERO ? 2'b01 : ( dIn.zero_infinity_flag2 == ZERO ? 2'b10 : 2'b11);
-		//calling function to get sum of scale
-		let scale0 = calculate_sum_scale(dIn.scale1,-dIn.scale2);
-		// calling function to get division of fractions
-		intDivide.inoutifc.request.put (Input_intdiv{numerator : {zero_flag[1],dIn.frac1},denominator : {zero_flag[0],dIn.frac2}});
+   // Integer divider
+   IntDivide_IFC intDivide <- mkIntDivide (verbosity);
 
-                let stage0_regf = Stage0_d {
-			//taking care of corner cases for nan flag 
-			nan_flag : check_for_nan_div(dIn.zero_infinity_flag1,dIn.zero_infinity_flag2,dIn.nanflag1,dIn.nanflag2),
-			//also include the case when fraction bit msb = 0
-			ziflag : ziflag,
-			sign : dIn.sign1 ^ dIn.sign2,
-			scale : scale0};
-   		fifo_stage0_reg.enq(stage0_regf);
-		`ifdef RANDOM_PRINT
-			$display("zero_infinity_flag %b",stage0_regf.ziflag);
-			$display("sign0 %b",stage0_regf.sign);
-			$display("scale0 %h",scale0);
-		`endif
-	
-   endmethod
-      endinterface
-      interface Get response = toGet (fifo_output_reg);
+   // This function is used to identify nan cases
+   function Bool fv_nan_check (
+      PositType z_i1, PositType z_i2, Bool nan1, Bool nan2
+   );
+      // Output NaN: INF/INF, INF/ZERO, either numerator or denominator is NaN
+      if (   (z_i1 == INF && z_i2 == ZERO)
+          || (z_i2 == INF && z_i1 == INF)
+          || (nan1 || nan2)) return True;
+
+      else return False;
+   endfunction
+
+   // Identify zero or infinity cases
+   function PositType fv_zi_check (PositType z_i1, PositType z_i2);
+      // Output ZERO: ZERO/num, num/INF
+      if ((z_i1 == ZERO && z_i2 != ZERO) || (z_i1 != INF && z_i2 == INF))
+         return ZERO;
+
+      // Output INF: INF/num, num/ZERO
+      else if ((z_i1 == INF && z_i2 != INF) || (z_i1 != ZERO && z_i2 == ZERO))
+         return INF;
+
+      else return REGULAR;
+   endfunction
+   
+   // --------
+   // Pipeline stages
+   // Calculate fraction and generate final output
+   rule stage_1;
+      let dIn = fifo_stage0_reg.first;  fifo_stage0_reg.deq;
+
+      // Output of integer divider
+      match {.quotient, .frac_msb, .frac_zero} <- intDivide.response.get();
+
+      // place an extra 0 infront of quotient because of the way the multiplier is designed
+      match {.int_frac0, .carry0, .frac_msb0, .frac_zero0} = calc_frac_int (
+         {1'b0, quotient}, dIn.scale, frac_msb, frac_zero);
+
+      // carry bit extended
+      Bit #(CarryWidthQuire) carry = extend(carry0);
+
+      // the Quire value is sign-extended
+      Bit #(QuireWidth) quire = (dIn.sign == 1'b0) ? {dIn.sign, carry, int_frac0}
+                                                   : {  dIn.sign
+                                                      , twos_complement ({carry, int_frac0})
+                                                     };
+
+      // taking care of corner cases for zero infinity flag
+      PositType ziflag0 = ((quire == 0) && (dIn.ziflag == REGULAR)) ? ZERO
+                                                                    : dIn.ziflag;
+
+      // The output quire. Also include the case when fraction bit msb = 0
+      let quire_in = Quire_Acc {
+         nan         : dIn.nan_flag,
+         zi          : ziflag0,
+         quire       : unpack(quire),                        
+         frac_msb    : frac_msb0,
+         frac_zero   : frac_zero0
+      };
+
+      fifo_output_reg.enq (quire_in);
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m: stage_1: ", cur_cycle);
+         $display ("int_frac0 %b carry0 %h",int_frac0,carry0);
+         $display ("quire %b",quire);
+      end
+   endrule
+
+   // --------
+   // Interface
+   interface Put request;
+      method Action put (Tuple2 #(Posit_Extract, Posit_Extract) extracted_posits);
+         match {.ep1, .ep2} = extracted_posits;
+
+         // Check for zero and infinity special cases
+         let ziflag = fv_zi_check (ep1.ziflag, ep2.ziflag);
+
+         // the hidden bit of the numerator and divisor fractions
+         if      (ep1.ziflag == ZERO) zero_flag = 2'b01;
+         else if (ep2.ziflag == ZERO) zero_flag = 2'b10;
+         else                         zero_flag = 2'b11;
+
+         // sum the scales (here actually a difference)
+         let scale0 = calculate_sum_scale (ep1.scale, -ep2.scale);
+
+         // divide the fractions (integer division)
+         intDivide.request.put (tuple2 (  {zero_flag[1], ep1.frac}
+                                        , {zero_flag[0], ep2.frac}));
+
+         let stage0_regf = Stage0_d {
+            // corner cases for nan flag 
+            nan_flag : fv_nan_check (
+               ep1.ziflag, ep2.ziflag, ep1.nanflag, ep2.nanflag),
+
+            // also include the case when fraction bit msb = 0
+            ziflag : ziflag,
+            sign : (ep1.sign ^ ep2.sign),
+            scale : scale0
+         };
+
+         fifo_stage0_reg.enq (stage0_regf);
+
+         if (verbosity > 1) begin
+            $display ("%0d: %m: request: ", cur_cycle);
+            $display ("   zero-infinity-flag %b", stage0_regf.ziflag);
+            $display ("   sign %b", stage0_regf.sign);
+            $display ("   scale %h", stage0_regf.scale);
+         end
+     
+      endmethod
    endinterface
+   interface Get response = toGet (fifo_output_reg);
 endmodule
 
 endpackage: Divider_fda

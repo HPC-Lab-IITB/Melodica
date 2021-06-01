@@ -26,25 +26,30 @@ package Multiplier_fma;
 // mkMultiplier: 2-stage posit multiplier
 // --------------------------------------------------------------
 
-import FIFOF        :: *;
-import GetPut       :: *;
-import ClientServer :: *;
+import FIFOF               :: *;
+import GetPut              :: *;
+import ClientServer        :: *;
 
 import Posit_Numeric_Types :: *;
-import Posit_User_Types :: *;
-import Common_Fused_Op :: *;
+import Posit_User_Types    :: *;
+import Fused_Commons       :: *;
+import Extracter           :: *;
+import Utils               :: *;
 
 // Intermediate stage type definition
 typedef struct {
-   Bool nan_flag;
-   PositType ziflag;
+   Bool nan;
+   PositType zi;
    Bit#(1) sign;
    Int#(ScaleWidthPlus2) scale;
    Bit#(FracWidthPlus1Mul2) frac;
 } Stage0_m deriving(Bits,FShow);
 
 (* synthesize *)
-module mkMultiplier #(Bit #(2) verbosity) (Server #(Posit_Extract, Quire_Acc));
+module mkMultiplier #(Bit #(2) verbosity) (
+   Server #(Tuple2 #(Posit_Extract, Posit_Extract), Quire_Acc)
+);
+
    // make a FIFO to store 
    FIFOF #(Quire_Acc)     fifo_output_reg <- mkFIFOF1;
    FIFOF #(Stage0_m )  fifo_stage0_reg <- mkFIFOF1;
@@ -116,22 +121,23 @@ module mkMultiplier #(Bit #(2) verbosity) (Server #(Posit_Extract, Quire_Acc));
 
       // taking care of corner cases for zero infinity flag
       let ziflag = (   (signed_carry_int_frac == 0)
-                    && (dIn.ziflag == REGULAR)) ? ZERO : dIn.ziflag;
+                    && (dIn.zi == REGULAR)) ? ZERO : dIn.zi;
 
-      let output_regf = Quire_Acc {
-         nan_flag             : dIn.nan_flag,
-         ziflag               : zi_flag,
-         quire_md             : unpack(signed_carry_int_frac),                        
-         truncated_frac_msb   : truncated_frac_msb,
-         truncated_frac_zero  : truncated_frac_zero
+      let quire_in = Quire_Acc {
+         nan         : dIn.nan,
+         zi          : dIn.zi,
+         quire       : unpack (signed_carry_int_frac),                        
+         frac_msb    : truncated_frac_msb,
+         frac_zero   : truncated_frac_zero
       };
+
+      fifo_output_reg.enq (quire_in);
 
       if (verbosity > 1) begin
          $display ("%0d: %m: stage_1: ", cur_cycle);
          $display ("   int_frac0 %b carry0 %b", int_frac0,carry0);
          $display ("   signed_carry_int_frac %b", signed_carry_int_frac);
       end
-      fifo_output_reg.enq(output_regf);
    endrule
 
    interface Put request;
@@ -143,9 +149,9 @@ module mkMultiplier #(Bit #(2) verbosity) (Server #(Posit_Extract, Quire_Acc));
             ep1.ziflag, ep2.ziflag);
 
          // Hidden bits of the two fractions
+         Bit #(2) zero_flag = 2'b11;
          if      (ep1.ziflag == ZERO) zero_flag = 2'b01;
          else if (ep2.ziflag == ZERO) zero_flag = 2'b10;
-         else                         zero_flag = 2'b11;
 
          // Scale calculation: sum the scales
          let scale0 = calculate_sum_scale (ep1.scale, ep2.scale);
@@ -159,12 +165,12 @@ module mkMultiplier #(Bit #(2) verbosity) (Server #(Posit_Extract, Quire_Acc));
 
          // Next stage prepares the output
          let stage0_regf = Stage0_m {
-              nan_flag : fv_nan_mul (
+              nan : fv_nan_mul (
                  ep1.ziflag
                , ep2.ziflag
                , False
                , False)
-            , ziflag : ziflag   // indicates if fraction msb is zero
+            , zi : ziflag   // indicates if fraction msb is zero
             , sign : sign0
             , scale : scale0
             , frac : frac0
@@ -174,7 +180,7 @@ module mkMultiplier #(Bit #(2) verbosity) (Server #(Posit_Extract, Quire_Acc));
 
          if (verbosity > 1) begin
             $display ("%0d: %m: request: ", cur_cycle);
-            $display ("   zero-infinity-flag %b",stage0_regf.ziflag);
+            $display ("   zero-infinity-flag %b",stage0_regf.zi);
             $display ("   sign0 %b",sign0);
             $display ("   scale0 %b frac0 %b",scale0,frac0);
          end
