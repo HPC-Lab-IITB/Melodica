@@ -35,7 +35,7 @@ import DefaultValue        :: *;
 
 import Posit_Numeric_Types :: *;
 import Posit_User_Types    :: *;
-import Common_Fused_Op     :: *;
+import Fused_Commons       :: *;
 import Extracter           :: *;
 import Normalizer          :: *;
 import Utils               :: *;
@@ -145,7 +145,7 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
    // --------
    // Pipeline stages
    // Pipe stage -- rounding and special cases
-   rule rounding_special_cases;
+   rule rounding_special_cases (rg_quire_busy);
       let dIn = acc_stg1_f.first;  acc_stg1_f.deq;
       Bit#(1) flag_truncated_frac = (lsb(dIn.sum_calc) & dIn.q2_truncated_frac_zero) | dIn.q2_truncated_frac_notzero;
       let sign = msb(dIn.sum_calc);
