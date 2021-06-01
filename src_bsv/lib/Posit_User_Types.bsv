@@ -100,12 +100,6 @@ import Posit_Numeric_Types :: *;
 			Posit posit_inp3;
 			} InputThreePosit deriving(Bits,FShow);
 
-	typedef struct {Bit#(1) sign;
-			Bit#(1) nan_flag;
-			PositType zero_infinity_flag;
-			Bit#(CarryWidthPlusIntWidthPlusFracWidthQuire) carry_int_frac;
-			} Quire_Fields deriving(Bits,FShow);
-	
 	typedef struct {Quire quire_inp;
 			Posit posit_inp1;
 			Posit posit_inp2;
