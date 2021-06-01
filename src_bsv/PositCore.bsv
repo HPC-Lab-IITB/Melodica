@@ -18,7 +18,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-package PositCore_v2;
+package PositCore;
 
 // --------------------------------------------------------------
 // This package implements the top-level of the Posit Arithmetic Unit that
