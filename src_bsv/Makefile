@@ -6,14 +6,16 @@ default: compile link simulate clean
 #BSC_COMPILATION_FLAGS += \
 #		 -D PositCore_AM
 BSC_COMPILATION_FLAGS += \
-#		 -D RANDOM \
-#		 -D RANDOM_PRINT \ 
+ 		 -D RV32   \
+ 		 -D ISA_F  \
+		 -D POSIT \
+		 -D STANDALONE \
 
 .PHONY: compile
 compile:
 	@echo Compiling...
 	mkdir -p build
-	bsc -u -sim -simdir build -bdir build -info-dir build $(BSC_COMPILATION_FLAGS) -keep-fires -aggressive-conditions -p .:%/Prelude:%/Libraries:%/Libraries/BlueNoC:./common:./Fused_Op:./lib:./FtoP:./QtoP:./PtoF:./PtoQ:./Adder:./Multiplier:./Divider -g mkTestbench  Testbench.bsv 
+	bsc -u -sim -simdir build -bdir build -info-dir build $(BSC_COMPILATION_FLAGS) -keep-fires -aggressive-conditions -p .:%/Prelude:%/Libraries:%/Libraries/BlueNoC:./common:./Fused_Op:./lib:./FtoP:./QtoP:./PtoF:./PtoQ -g mkTestbench  Testbench.bsv 
 	@echo Compilation finished
 
 .PHONY: link
