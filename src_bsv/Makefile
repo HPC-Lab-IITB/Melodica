@@ -9,6 +9,7 @@ BSC_COMPILATION_FLAGS += \
  		 -D RV32   \
  		 -D ISA_F  \
 		 -D POSIT \
+		 -D INCLUDE_PDIV \
 		 -D STANDALONE \
 
 .PHONY: compile

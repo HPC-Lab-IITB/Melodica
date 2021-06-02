@@ -1,10 +1,11 @@
 package IntDivide_generic;
 
-import FIFO        :: *;
-import GetPut       :: *;
-import ClientServer :: *;
-import Posit_User_Types :: *;
+import FIFO                :: *;
+import GetPut              :: *;
+import ClientServer        :: *;
+import Posit_User_Types    :: *;
 import Posit_Numeric_Types :: *;
+import Utils               :: *;
 
 typedef FracWidthPlus1 Denominator;
 typedef DividerQuotientBits Quotient;
@@ -88,6 +89,7 @@ module mkIntDivide #(Bit #(2) verbosity) (IntDivide_IFC);
                $display ("%0d: %m: request: ", cur_cycle);
                $display ("   Divide by zero ");
             end
+         end
 
          else begin
             rg_numer    <= {numer, '0};

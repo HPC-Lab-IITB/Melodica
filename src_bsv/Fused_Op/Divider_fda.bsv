@@ -27,38 +27,32 @@ package Divider_fda;
 //            divide algorithm.
 // --------------------------------------------------------------
 
-import FIFOF        :: *;
-import GetPut       :: *;
-import ClientServer :: *;
+import FIFOF               :: *;
+import GetPut              :: *;
+import ClientServer        :: *;
 
 import Posit_Numeric_Types :: *;
-import Posit_User_Types :: *;
-import IntDivide_generic ::*;
-import Common_Fused_Op :: *;
+import Posit_User_Types    :: *;
+import IntDivide_generic   :: *;
+import Fused_Commons       :: *;
+import Extracter           :: *;
+import Utils               :: *;
 
-typedef struct {Bit#(1) nan_flag;
-		PositType ziflag;
-		Bit#(1) sign;
-		Int#(ScaleWidthPlus2) scale;} Stage0_d deriving(Bits,FShow);
+typedef struct {
+   Bool                    nan_flag;
+   PositType               ziflag;
+   Bit #(1)                sign;
+   Int #(ScaleWidthPlus2)  scale;
+} Stage0_d deriving(Bits,FShow);
 
-module mkDivider #(Bit #(2) verbosity) (Divider_IFC );
+module mkDivider #(Bit #(2) verbosity) (
+   Server #(Tuple2 #(Posit_Extract, Posit_Extract), Quire_Acc)
+);
    FIFOF #(Quire_Acc)               fifo_output_reg   <- mkFIFOF1;
    FIFOF #(Stage0_d)                fifo_stage0_reg   <- mkFIFOF1;
 
    // Integer divider
    IntDivide_IFC intDivide <- mkIntDivide (verbosity);
-
-   // This function is used to identify nan cases
-   function Bool fv_nan_check (
-      PositType z_i1, PositType z_i2, Bool nan1, Bool nan2
-   );
-      // Output NaN: INF/INF, INF/ZERO, either numerator or denominator is NaN
-      if (   (z_i1 == INF && z_i2 == ZERO)
-          || (z_i2 == INF && z_i1 == INF)
-          || (nan1 || nan2)) return True;
-
-      else return False;
-   endfunction
 
    // Identify zero or infinity cases
    function PositType fv_zi_check (PositType z_i1, PositType z_i2);
@@ -127,9 +121,9 @@ module mkDivider #(Bit #(2) verbosity) (Divider_IFC );
          let ziflag = fv_zi_check (ep1.ziflag, ep2.ziflag);
 
          // the hidden bit of the numerator and divisor fractions
+         Bit #(2) zero_flag = 2'b11;
          if      (ep1.ziflag == ZERO) zero_flag = 2'b01;
          else if (ep2.ziflag == ZERO) zero_flag = 2'b10;
-         else                         zero_flag = 2'b11;
 
          // sum the scales (here actually a difference)
          let scale0 = calculate_sum_scale (ep1.scale, -ep2.scale);
@@ -141,7 +135,7 @@ module mkDivider #(Bit #(2) verbosity) (Divider_IFC );
          let stage0_regf = Stage0_d {
             // corner cases for nan flag 
             nan_flag : fv_nan_check (
-               ep1.ziflag, ep2.ziflag, ep1.nanflag, ep2.nanflag),
+               ep1.ziflag, ep2.ziflag, False, False),
 
             // also include the case when fraction bit msb = 0
             ziflag : ziflag,

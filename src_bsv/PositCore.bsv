@@ -116,9 +116,10 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
                        , Posit_Extract)
             , Quire_Acc)               multiplier     <- mkMultiplier (verbosity);
 `ifdef INCLUDE_PDIV
+   // Divider part of FDA/FDS
    Server #(  Tuple2 #(  Posit_Extract
                        , Posit_Extract)
-            , Quire_Acc)               multiplier     <- mkMultiplier (verbosity);
+            , Quire_Acc)               divider        <- mkMultiplier (verbosity);
 `endif
 
    // The Quire -- includes the accumulator for fused operations
