@@ -54,18 +54,6 @@ module mkMultiplier #(Bit #(2) verbosity) (
    FIFOF #(Quire_Acc)     fifo_output_reg <- mkFIFOF1;
    FIFOF #(Stage0_m )  fifo_stage0_reg <- mkFIFOF1;
 
-   // Identify NaN cases
-   function Bool fv_nan_mul (
-      PositType z_i1, PositType z_i2, Bool nan1, Bool nan2 );
-      // NaN flag = 1 when one input is infinity and other zero, or either inputs
-      // are NaNs
-      if (  (z_i1 == INF && z_i2 == ZERO)
-         || (z_i2 == INF && z_i1 == ZERO)
-         || (nan1 || nan2))
-         return True;
-      else return False;
-   endfunction
-
    // Identify zero or infinity cases depending only on the flag value of inputs
    function PositType fv_zi_check (PositType z_i1, PositType z_i2);
       if (z_i1 == ZERO && z_i2 == ZERO)
@@ -165,7 +153,7 @@ module mkMultiplier #(Bit #(2) verbosity) (
 
          // Next stage prepares the output
          let stage0_regf = Stage0_m {
-              nan : fv_nan_mul (
+              nan : fv_nan_check (
                  ep1.ziflag
                , ep2.ziflag
                , False

@@ -107,4 +107,18 @@ function Tuple4 #(
    return tuple4(f_new,carry,truncated_frac_msb,truncated_frac_zero);
  endfunction
 
+   // This function is used to identify nan cases
+   function Bool fv_nan_check (
+      PositType z_i1, PositType z_i2, Bool nan1, Bool nan2
+   );
+      // Output NaN:
+      // DIV: INF/INF, INF/ZERO, or either NaN
+      // MUL: INF*0, 0*INF, or either NaN
+      if (   (z_i1 == INF && z_i2 == ZERO)
+          || (z_i2 == INF && z_i1 == INF)
+          || (nan1 || nan2)) return True;
+
+      else return False;
+   endfunction
+
 endpackage
