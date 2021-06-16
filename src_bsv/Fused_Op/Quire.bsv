@@ -180,7 +180,7 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
 
    interface Put accumulate;
       method Action put (Quire_Acc q) if (!rg_quire_busy);
-         // Quire operations cannot be pipeleined as there is a WAR dependency
+         // Quire operations cannot be pipelined as there is a WAR dependency
          rg_quire_busy <= True;
 
          // signed sum of the values since the numbers are integer.fractions
@@ -240,8 +240,12 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
       Bit #(CarryWidthPlusIntWidthPlusFracWidthQuire) signed_carry_int_frac =
          (sign == 1'b0) ? carry_int_frac : twos_complement (carry_int_frac);
 
+      // Extract only the carry and integer parts
+      Bit #(CarryWidthPlusIntWidthQuire) signed_carry_int = truncate (
+         signed_carry_int_frac >> fromInteger (valueOf (FracWidthQuire)));
+
       // check underflow/overflow (countZeros is expensive!)
-      Bit #(LogCarryWidthPlusIntWidthPlusFracWidthQuire) msbZeros = pack (countZerosMSB (signed_carry_int_frac));
+      Bit #(LogCarryWidthPlusIntWidthQuire) msbZeros = pack (countZerosMSB (signed_carry_int));
 
       // calculate scale
       Int #(LogCarryWidthPlusIntWidthPlusFracWidthQuirePlus1) scale_temp = boundedMinus (
