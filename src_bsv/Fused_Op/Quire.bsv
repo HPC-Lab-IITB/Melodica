@@ -84,7 +84,8 @@ function Bool is_nan (Bit#(1) sign, Bool is_zero);
 endfunction
 
 // Get the int-frac value from the scale and frac values
-function Bit#(IntWidthQuirePlusFracWidthQuire) fv_calculate_frac_int (
+function Tuple2 #(Bit #(LogQuireWidth)
+                , Bit#(IntWidthQuirePlusFracWidthQuire) fv_calculate_frac_int (
      Bit #(FracWidthPlus1) f
    , Int #(ScaleWidthPlus1) s
 );
@@ -98,7 +99,9 @@ function Bit#(IntWidthQuirePlusFracWidthQuire) fv_calculate_frac_int (
       signExtend(s) + fromInteger (valueOf (FracWidthQuireMinusFracWidth));
 
    f_new = f_new << scale_pos;   // right shift to accomodate the scale
-   return f_new;
+   // the number of leading zeros in the new quire value
+   Bit #(LogQuireWidth) msbzeros = valueOf (QuireWidth) - 2 - valueOf (FracWidthPlus1) - extend (scale_pos);
+   return tuple2 (msbzeros, f_new);
 endfunction
 
 // Checks if the scale value has exceeded the limits max and min set due to the
@@ -210,21 +213,22 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
 
    interface Put init;
       method Action put (Posit_Extract p) if (!rg_quire_busy);
-         let int_frac = fv_calculate_frac_int ({1'b1, p.frac}, p.scale);
-         Bit #(CarryWidthQ) carry = '0;
+         match {.msbz, .int_frac} = fv_calculate_frac_int ({1'b1, p.frac}, p.scale);
 
-         // Quire is zero
+         // Sign extend the Quire value
+         Bit #(CarryWidthQ) carry = '0;
+         Bit#(QuireWidth) s_carry_int_frac = (p.sign == 1'b0) ? {p.sign, carry, int_frac}
+                                                              : {p.sign, twos_complement ({carry, int_frac})};
+         rg_quire <= s_carry_int_frac;
+
+         // Quire is zero, the actual bit pattern of rg_quire is a don't care.
+         // Look at the meta information first always before operating on quire.
          if (p.ziflag == ZERO) begin
-            rg_quire <= '0;
             rg_quire_meta <= defaultValue;
          end
          
-         // Sign extend the Quire value
          else begin         
-            Bit#(QuireWidth) s_carry_int_frac = (p.sign == 1'b0) ? {p.sign, carry, int_frac}
-                                                                 : {p.sign, twos_complement ({carry, int_frac})};
-            rg_quire <= s_carry_int_frac;
-            rg_quire_meta <= Quire_Meta {nan: False, zi: REGULAR};
+            rg_quire_meta <= Quire_Meta {nan: False, zi: REGULAR, msbz: msbz};
          end
 
          if (verbosity > 1) begin
@@ -234,91 +238,98 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
    endinterface
 
    method Action read_req if (!rg_quire_busy);
-      // Depending on the sign of the quire, interpret the rest for the bits
-      Bit #(QuireWidthMinus1) carry_int_frac = rg_quire [valueOf(QuireWidthMinus2):0];
-      let sign = msb (rg_quire);
-      Bit #(CarryWidthPlusIntWidthPlusFracWidthQuire) signed_carry_int_frac =
-         (sign == 1'b0) ? carry_int_frac : twos_complement (carry_int_frac);
+      // Regular case: value in rg_quire is meaningful
+      if ((rg_quire_meta.zi == REGULAR) && (!rg_quire_meta.nan)) begin
+         // Depending on the sign of the quire, interpret the rest for the bits
+         Bit #(QuireWidthMinus1) carry_int_frac = rg_quire [valueOf(QuireWidthMinus2):0];
+         let sign = msb (rg_quire);
+         Bit #(CarryWidthPlusIntWidthPlusFracWidthQuire) signed_carry_int_frac =
+            (sign == 1'b0) ? carry_int_frac : twos_complement (carry_int_frac);
 
-      // Extract the carry 
-      Bit #(CarryWidthQ) signed_carry = fn_extract_carry (signed_carry_int_frac);
+         // Extract the carry 
+         Bit #(CarryWidthQ) signed_carry = fn_extract_carry (signed_carry_int_frac);
 
-      // Extract the integer
-      Bit #(IntWidthQ) signed_int = fn_extract_int (signed_carry_int_frac);
+         // Extract the integer
+         Bit #(IntWidthQ) signed_int = fn_extract_int (signed_carry_int_frac);
 
-      // Extract the frac
-      Bit #(FracWidthQ) signed_frac = truncate (carry_int_frac);
+         // Extract the frac
+         Bit #(FracWidthQ) signed_frac = truncate (carry_int_frac);
 
-      // Extract leading zeros for each of the individual fields. Depending on the
-      // values of the fields the total number of leading zeros is computed by
-      // adding the leading zeros for each component. This is an obvious place to
-      // save resources by splitting the quire read operation over multiple cycles
-      // as it is expected to be a rarer operation
-      let msbZerosCarry = countZerosMSB (signed_carry);
-      let msbZerosInt   = countZerosMSB (signed_int);
-      let msbZerosFrac  = countZerosMSB (signed_frac);
+         // Extract leading zeros for each of the individual fields. Depending on the
+         // values of the fields the total number of leading zeros is computed by
+         // adding the leading zeros for each component. This is an obvious place to
+         // save resources by splitting the quire read operation over multiple cycles
+         // as it is expected to be a rarer operation
+         let msbZerosCarry = countZerosMSB (signed_carry);
+         let msbZerosInt   = countZerosMSB (signed_int);
+         let msbZerosFrac  = countZerosMSB (signed_frac);
 
-      Bit #(LogQuireWidth) msbZeros = 0;
-      if (signed_carry != 0)
-         msbZeros = extend (pack (msbZerosCarry));
-      else if (signed_int != 0)
-         msbZeros = fromInteger (valueOf (CarryWidthQ))
-                  + extend (pack (msbZerosInt));
-      else 
-         msbZeros = fromInteger (valueOf (CarryWidthPlusIntWidthQ))
-                  + extend (pack (msbZerosFrac));
+         Bit #(LogQuireWidth) msbZeros = 0;
+         if (signed_carry != 0)
+            msbZeros = extend (pack (msbZerosCarry));
+         else if (signed_int != 0)
+            msbZeros = fromInteger (valueOf (CarryWidthQ))
+                     + extend (pack (msbZerosInt));
+         else 
+            msbZeros = fromInteger (valueOf (CarryWidthPlusIntWidthQ))
+                     + extend (pack (msbZerosFrac));
 
-      // calculate scale
-      Int #(LogCarryWidthPlusIntWidthPlusFracWidthQuirePlus1) scale_temp = boundedMinus (
-         fromInteger (valueof (CarryWidthPlusIntWidthQ)), (unpack (extend (msbZeros))+1));
+         // calculate scale
+         Int #(LogCarryWidthPlusIntWidthPlusFracWidthQuirePlus1) scale_temp = boundedMinus (
+            fromInteger (valueof (CarryWidthPlusIntWidthQ)), (unpack (extend (msbZeros))+1));
 
-      let nan = rg_quire_meta.nan;
-      let ziflag = rg_quire_meta.zi;
-      let scale = calculate_scale_shift (scale_temp, maxB, minB);
+         let nan = rg_quire_meta.nan;
+         let ziflag = rg_quire_meta.zi;
+         let scale = calculate_scale_shift (scale_temp, maxB, minB);
 
-      // Pre-normalized posit fields
-      Bit#(FracWidthPlus1) frac_p;
-      PositType zi = (   (signed_carry_int_frac == 0)
-                      && (ziflag == REGULAR)) ? ZERO : ziflag;
-      Bit#(1) frac_msb_p;
-      Bit#(1) frac_zero_p; 
+         // Pre-normalized posit fields
+         Bit#(FracWidthPlus1) frac_p;
+         PositType zi = (   (signed_carry_int_frac == 0)
+                         && (ziflag == REGULAR)) ? ZERO : ziflag;
+         Bit#(1) frac_msb_p;
+         Bit#(1) frac_zero_p; 
 
-      // interpret the scale to calculate number of fraction bit shifts required 
-      if(scale < maxB) begin
-         UInt #(LogCarryWidthPlusIntWidthPlusFracWidthQuirePlus1) truncate_msbZeros = unpack(
-            pack (fromInteger (valueof (CarryWidthPlusIntWidthQ)) - signExtend(scale) - 1));
+         // interpret the scale to calculate number of fraction bit shifts required 
+         if(scale < maxB) begin
+            UInt #(LogCarryWidthPlusIntWidthPlusFracWidthQuirePlus1) truncate_msbZeros = unpack(
+               pack (fromInteger (valueof (CarryWidthPlusIntWidthQ)) - signExtend(scale) - 1));
 
-         // shift to get the frac bits 
-         let carry_int_frac_shifted =  (signed_carry_int_frac << truncate_msbZeros);
+            // shift to get the frac bits 
+            let carry_int_frac_shifted =  (signed_carry_int_frac << truncate_msbZeros);
 
-         // extract the frac bits from the shifted quire bits
-         frac_p = carry_int_frac_shifted [valueOf (QuireWidthMinus2) : valueOf (QuireWidthMinus2MinusFracWidth)];
+            // extract the frac bits from the shifted quire bits
+            frac_p = carry_int_frac_shifted [valueOf (QuireWidthMinus2) : valueOf (QuireWidthMinus2MinusFracWidth)];
 
-         // the msb of the rest of the quire
-         frac_msb_p = carry_int_frac_shifted [valueOf (QuireWidthMinus3MinusFracWidth)];
+            // the msb of the rest of the quire
+            frac_msb_p = carry_int_frac_shifted [valueOf (QuireWidthMinus3MinusFracWidth)];
 
-         // get the remaining bits by truncating it to see if they are all 0's
-         Bit #(QuireWidthMinus3MinusFracWidth) truncate_carry_int_frac_shifted = truncate (carry_int_frac_shifted);
-         frac_zero_p = (truncate_carry_int_frac_shifted == 0) ? 1'b1 : 1'b0;
+            // get the remaining bits by truncating it to see if they are all 0's
+            Bit #(QuireWidthMinus3MinusFracWidth) truncate_carry_int_frac_shifted = truncate (carry_int_frac_shifted);
+            frac_zero_p = (truncate_carry_int_frac_shifted == 0) ? 1'b1 : 1'b0;
+         end
+
+         // quire overflow
+         else begin
+            frac_p = '1;
+            frac_msb_p = 1'b1;
+            frac_zero_p = 1'b0;
+         end
+
+         // Prepare the Prenorm_Posit for the normalizer
+         let prenorm_posit = Prenorm_Posit  {
+              sign      : sign
+            , nan       : nan
+            , zi        : ziflag
+            , scale     : pack(scale)
+            , frac      : msb(frac_p) == 0 ? truncate (frac_p>>1) : truncate (frac_p)
+            , frac_msb  : (zi == ZERO) ? 1'b0 : frac_msb_p
+            , frac_zero : (zi == ZERO) ? 1'b1 : frac_zero_p
+         };
       end
 
-      // quire overflow
+      // Special cases: Zero, NaN
       else begin
-         frac_p = '1;
-         frac_msb_p = 1'b1;
-         frac_zero_p = 1'b0;
       end
-
-      // Prepare the Prenorm_Posit for the normalizer
-      let prenorm_posit = Prenorm_Posit  {
-           sign      : sign
-         , nan       : nan
-         , zi        : ziflag
-         , scale     : pack(scale)
-         , frac      : msb(frac_p) == 0 ? truncate (frac_p>>1) : truncate (frac_p)
-         , frac_msb  : (zi == ZERO) ? 1'b0 : frac_msb_p
-         , frac_zero : (zi == ZERO) ? 1'b1 : frac_zero_p
-      };
 
       posit_rsp_f.enq (prenorm_posit);
    endmethod
