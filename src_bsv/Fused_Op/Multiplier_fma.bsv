@@ -99,7 +99,7 @@ module mkMultiplier #(Bit #(2) verbosity) (
                                                       , 1'b0
                                                       , 1'b1);
       // carry bit extended
-      Bit #(CarryWidthQuire) carry = extend(carry0);
+      Bit #(CarryWidthQ) carry = extend(carry0);
 
       // the Quire value is signed extend
       Bit #(QuireWidth) signed_carry_int_frac = {

@@ -65,14 +65,14 @@ typedef struct {
 // Get the carry-Int-Frac value from the scale and frac values
 function Tuple4 #(
      Bit #(IntWidthQuirePlusFracWidthQuire)
-   , Bit #(CarryWidthQuire)
+   , Bit #(CarryWidthQ)
    , Bit #(1)
    , Bit #(1)) calc_frac_int (  Bit #(t) f
                               , Int #(ScaleWidthPlus2) s
                               , Bit#(1) truncated_frac_msb_in
                               , Bit#(1) truncated_frac_zero_in
-                             ) provisos (  Add #(a__, t, TAdd #(FracWidthQuire,2))
-                                         , Add #(b__, CarryWidthQuire, t)
+                             ) provisos (  Add #(a__, t, TAdd #(FracWidthQ,2))
+                                         , Add #(b__, CarryWidthQ, t)
                                          , Add #(c__, t, IntWidthQuirePlusFracWidthQuire)
                                         );
    let frac_width = valueOf (t) - 2;
@@ -83,13 +83,13 @@ function Tuple4 #(
 
    // frac_shift = FWQ-(FW*2 or (no_of_frac_bits_input - 2)) + scale(signed sum)
    // if input scale is negative beyond and extent s.t fracshift < 0
-   Int #(TAdd #(LogCarryWidthPlusIntWidthPlusFracWidthQuire,1)) scale_neg_temp = abs(signExtend(s)) - fromInteger(valueOf(FracWidthQuire));//scale_neg_temp = abs(s)-FWQ
+   Int #(TAdd #(LogCarryWidthPlusIntWidthPlusFracWidthQuire,1)) scale_neg_temp = abs(signExtend(s)) - fromInteger(valueOf(FracWidthQ));//scale_neg_temp = abs(s)-FWQ
    Int #(LogCarryWidthPlusIntWidthPlusFracWidthQuire) scale_neg = truncate(scale_neg_temp + fromInteger(frac_width));//frac_shift = scale_neg = abs(s) - (FWQ-(FW*2 or (no_of_frac_bits_input - 2)))
    // if input scale is negative beyond and extent s.t fracshift > 0
-   Int #(TAdd#(LogCarryWidthPlusIntWidthPlusFracWidthQuire,1)) scale_pos = signExtend(s) + fromInteger(valueOf(FracWidthQuire)-frac_width);// frac_shift = scale_pos = s + FWQ-(FW*2 or (no_of_frac_bits_input - 2))
+   Int #(TAdd#(LogCarryWidthPlusIntWidthPlusFracWidthQuire,1)) scale_pos = signExtend(s) + fromInteger(valueOf(FracWidthQ)-frac_width);// frac_shift = scale_pos = s + FWQ-(FW*2 or (no_of_frac_bits_input - 2))
    Bit #(1) truncated_frac_msb = truncated_frac_msb_in;
    Bit #(1) truncated_frac_zero = ~truncated_frac_msb_in & truncated_frac_zero_in;
-   Bit #(CarryWidthQuire) carry = '0;
+   Bit #(CarryWidthQ) carry = '0;
 
    if(msb(s) == 1'b1 && scale_neg>0) begin
       f_new = f_new>>scale_neg;// if frac_shift < -(FWQ-(FW*2 or (no_of_frac_bits_input - 2))) the scale will be shifted right and we will lose frac bits since the maximum available shift = FWQ-(FW*2 or (no_of_frac_bits_input - 2))
