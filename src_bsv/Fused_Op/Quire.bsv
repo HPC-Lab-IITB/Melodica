@@ -211,7 +211,7 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
    interface Put init;
       method Action put (Posit_Extract p) if (!rg_quire_busy);
          let int_frac = fv_calculate_frac_int ({1'b1, p.frac}, p.scale);
-         Bit #(CarryWidthQuire) carry = '0;
+         Bit #(CarryWidthQ) carry = '0;
 
          // Quire is zero
          if (p.ziflag == ZERO) begin
@@ -240,16 +240,37 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
       Bit #(CarryWidthPlusIntWidthPlusFracWidthQuire) signed_carry_int_frac =
          (sign == 1'b0) ? carry_int_frac : twos_complement (carry_int_frac);
 
-      // Extract only the carry and integer parts
-      Bit #(CarryWidthPlusIntWidthQuire) signed_carry_int = truncate (
-         signed_carry_int_frac >> fromInteger (valueOf (FracWidthQuire)));
+      // Extract the carry 
+      Bit #(CarryWidthQ) signed_carry = fn_extract_carry (signed_carry_int_frac);
 
-      // check underflow/overflow (countZeros is expensive!)
-      Bit #(LogCarryWidthPlusIntWidthQuire) msbZeros = pack (countZerosMSB (signed_carry_int));
+      // Extract the integer
+      Bit #(IntWidthQ) signed_int = fn_extract_int (signed_carry_int_frac);
+
+      // Extract the frac
+      Bit #(FracWidthQ) signed_frac = truncate (carry_int_frac);
+
+      // Extract leading zeros for each of the individual fields. Depending on the
+      // values of the fields the total number of leading zeros is computed by
+      // adding the leading zeros for each component. This is an obvious place to
+      // save resources by splitting the quire read operation over multiple cycles
+      // as it is expected to be a rarer operation
+      let msbZerosCarry = countZerosMSB (signed_carry);
+      let msbZerosInt   = countZerosMSB (signed_int);
+      let msbZerosFrac  = countZerosMSB (signed_frac);
+
+      Bit #(LogQuireWidth) msbZeros = 0;
+      if (signed_carry != 0)
+         msbZeros = extend (pack (msbZerosCarry));
+      else if (signed_int != 0)
+         msbZeros = fromInteger (valueOf (CarryWidthQ))
+                  + extend (pack (msbZerosInt));
+      else 
+         msbZeros = fromInteger (valueOf (CarryWidthPlusIntWidthQ))
+                  + extend (pack (msbZerosFrac));
 
       // calculate scale
       Int #(LogCarryWidthPlusIntWidthPlusFracWidthQuirePlus1) scale_temp = boundedMinus (
-         fromInteger (valueof (CarryWidthPlusIntWidthQuire)), (unpack (extend (msbZeros))+1));
+         fromInteger (valueof (CarryWidthPlusIntWidthQ)), (unpack (extend (msbZeros))+1));
 
       let nan = rg_quire_meta.nan;
       let ziflag = rg_quire_meta.zi;
@@ -265,7 +286,7 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
       // interpret the scale to calculate number of fraction bit shifts required 
       if(scale < maxB) begin
          UInt #(LogCarryWidthPlusIntWidthPlusFracWidthQuirePlus1) truncate_msbZeros = unpack(
-            pack (fromInteger (valueof (CarryWidthPlusIntWidthQuire)) - signExtend(scale) - 1));
+            pack (fromInteger (valueof (CarryWidthPlusIntWidthQ)) - signExtend(scale) - 1));
 
          // shift to get the frac bits 
          let carry_int_frac_shifted =  (signed_carry_int_frac << truncate_msbZeros);
