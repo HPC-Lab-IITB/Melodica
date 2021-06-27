@@ -119,7 +119,7 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
    // Divider part of FDA/FDS
    Server #(  Tuple2 #(  Posit_Extract
                        , Posit_Extract)
-            , Quire_Acc)               divider        <- mkMultiplier (verbosity);
+            , Quire_Acc)               divider        <- mkDivider (verbosity);
 `endif
 
    // The Quire -- includes the accumulator for fused operations
