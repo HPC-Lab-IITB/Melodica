@@ -15,4 +15,13 @@ ActionValue #(Bit #(32)) cur_cycle = actionvalue
 
 // ================================================================
 
+interface LED_IFC;
+   (* always_ready *)
+   method Bool running;
+   (* always_ready *)
+   method Bool test_pass;
+   (* always_ready *)
+   method Bool test_fail;
+endinterface
+
 endpackage

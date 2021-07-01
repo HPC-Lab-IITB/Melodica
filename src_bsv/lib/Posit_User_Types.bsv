@@ -50,23 +50,27 @@ import Posit_Numeric_Types :: *;
    typedef TSub#(QuireWidth,2)                  QuireWidthMinus2;//QW-2
    typedef TDiv#(QuireWidth,2)                  QuireWidthBy2;//QW/2
    typedef TDiv#(PositWidth,2)                  PositWidthBy2;//PW/2
-   typedef TSub#(QuireWidthBy2,PositWidthBy2)            FracWidthQuire    ;//FWQ = QW/2 - PW/2
-   typedef TSub#(PositWidth,1)                  CarryWidthQuire ;//PW-1
-   typedef FracWidthQuire                     IntWidthQuire;//= FWQ
+   typedef TSub#(QuireWidthBy2,PositWidthBy2)            FracWidthQ    ;//FWQ = QW/2 - PW/2
+   typedef TSub#(PositWidth,1)                  CarryWidthQ ;//PW-1
+   typedef FracWidthQ                     IntWidthQ;//= FWQ
    typedef TSub#(QuireWidth,1)                  QuireWidthMinus1;//QW-1
-   typedef QuireWidthMinus1                   CarryWidthPlusIntWidthPlusFracWidthQuire;//QW-1= CWQ+FWQ+IWQ
-   typedef TLog#(CarryWidthPlusIntWidthPlusFracWidthQuire)         LogCarryWidthPlusIntWidthPlusFracWidthQuire;//log(QW-1)
-   typedef TSub#(FracWidthQuire,FracWidth)               FracWidthQuireMinusFracWidth;//FWQ-FW
-   typedef TSub#(FracWidthQuireMinusFracWidth,FracWidth)         FracWidthQuireMinusFracWidthMul2;//FWQ-FracWidth*2
-   typedef TAdd#(FracWidthQuire,IntWidthQuire)            IntWidthQuirePlusFracWidthQuire;//IWQ+FWQ
+   typedef QuireWidthMinus1                   CarryWidthPlusIntWidthPlusFracWidthQ;//QW-1= CWQ+FWQ+IWQ
+   typedef TLog#(CarryWidthPlusIntWidthPlusFracWidthQ)         LogCarryWidthPlusIntWidthPlusFracWidthQ;//log(QW-1)
+   typedef TSub#(FracWidthQ,FracWidth)               FracWidthQMinusFracWidth;//FWQ-FW
+   typedef TSub#(FracWidthQMinusFracWidth,FracWidth)         FracWidthQMinusFracWidthMul2;//FWQ-FracWidth*2
+   typedef TAdd#(FracWidthQ,IntWidthQ)            IntWidthQPlusFracWidthQ;//IWQ+FWQ
 
    //Q-TO-P
-   typedef TAdd#(LogCarryWidthPlusIntWidthPlusFracWidthQuire,1)      LogCarryWidthPlusIntWidthPlusFracWidthQuirePlus1;
+   typedef TAdd#(LogCarryWidthPlusIntWidthPlusFracWidthQ,1)      LogCarryWidthPlusIntWidthPlusFracWidthQPlus1;
    typedef TAdd #(TLog #(QuireWidth), 1) LogQuireWidth;
-   typedef TAdd#(CarryWidthQuire,IntWidthQuire)            CarryWidthPlusIntWidthQuire;
-   typedef TLog#(CarryWidthPlusIntWidthQuire)  LogCarryWidthPlusIntWidthQuire;
+   typedef TAdd#(CarryWidthQ,IntWidthQ)            CarryWidthPlusIntWidthQ;
+   typedef TLog#(CarryWidthPlusIntWidthQ)  LogCarryWidthPlusIntWidthQ;
    typedef   TSub#(QuireWidthMinus2,FracWidth)  QuireWidthMinus2MinusFracWidth;   
    typedef   TSub#(QuireWidthMinus2MinusFracWidth,1)          QuireWidthMinus3MinusFracWidth;
+
+   Integer quire_carry_width = valueOf (CarryWidthQ);
+   Integer quire_int_width   = valueOf (IntWidthQ);
+   Integer quire_frac_width  = valueOf (FracWidthQ);
 
    //f-To-P
    typedef TSub#(TAdd#(FloatFracWidth,FloatExpWidth),1)          FloatExpoBegin; //(FloatFracWidth+FloatExpWidth-1)
