@@ -3,6 +3,7 @@ package PositCore_accel;
 // --------------------------------------------------------------
 // This package implements the top-level of the Posit Arithmetic Unit that
 // integrates into Clarinet's pipeline as a functional unit peer of the FPU.
+// ifdef ACCEL macros are used in Quills
 // --------------------------------------------------------------
 
 // Library imports
@@ -35,6 +36,9 @@ import Posit_Numeric_Types :: *;
 import Posit_User_Types :: *;
 import Utils  :: *;
 
+
+
+
 // Standalone compilation independent of a RISC-V core
 `ifdef STANDALONE
 // Type definitions
@@ -45,6 +49,9 @@ typedef union tagged {
    FDouble D;
    FSingle S;
    Bit #(PositWidth) P;
+`ifdef ACCEL
+	Quire_Acc Q;
+`endif
 } FloatU deriving (Bits, Eq, FShow);
 
 typedef Tuple2#( FloatU, FloatingPoint::Exception ) Fpu_Rsp;
@@ -67,6 +74,10 @@ typedef enum {
 `endif
    , FCVT_P_R
    , FCVT_R_P
+`ifdef ACCEL
+		,RD_Q
+		,RST_Q
+`endif
 } PositCmds deriving (Bits, Eq, FShow);
 
 typedef Tuple4 #(FloatU, FloatU, RoundMode, PositCmds) Posit_Req;
@@ -79,7 +90,7 @@ endinterface
 (* synthesize *)
 `ifdef STANDALONE
 module mkPositCore (PositCore_IFC);
-   Bit #(2) verbosity = 3;
+   Bit #(2) verbosity = 1;
 `else
 module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
 `endif
@@ -112,7 +123,7 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
 `endif
 
 `ifdef ACCEL
-   Reg #(Bit#(3))  rg_queue[2]	<- mkCReg(2,0);
+   Reg #(Bit#(3))  ops_in_flight[3]	<- mkCReg(3,0);
 `endif	
 
    FIFO #(PositCmds)                   cmd_stg2_f     <- mkSizedFIFO(4);
@@ -141,16 +152,16 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
 `endif
    );
 `ifndef ONLY_POSITS
-   rule extract_stg1 ((cmd != FCVT_P_S) && (cmd != FCVT_P_R));
+   rule extract_stg1 ((cmd != FCVT_P_S) && (cmd != FCVT_P_R) && (cmd != RD_Q) && (cmd != RST_Q));
 `else
-   rule extract_stg1 (cmd != FCVT_P_R);
+   rule extract_stg1 ((cmd != FCVT_P_R) && (cmd != RD_Q) && (cmd != RST_Q));
 `endif
       extracter1.request.put (op1.P);
       extracter2.request.put (is_negating_op ? twos_complement (op2.P) : op2.P);
       cmd_stg2_f.enq (cmd);
       ffI.deq;
 `ifdef ACCEL
-			rg_queue[0] <= rg_queue[0] + 1;
+			ops_in_flight[0] <= ops_in_flight[0] + 1;
 `endif
 
       if (verbosity > 1)
@@ -172,11 +183,7 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
    endrule
 `endif
 
-`ifdef ACCEL
-   rule rl_read_quire_stg1 (cmd == FCVT_P_R && rg_queue[1] == 3'b0);
-`else
    rule rl_read_quire_stg1 (cmd == FCVT_P_R); 
-`endif
       quire.read_req;
       cmd_stg2_f.enq (cmd);
       ffI.deq;
@@ -185,6 +192,26 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
          $display ("%0d: %m.rl_read_quire_stg1: read ", cur_cycle);
    endrule
 
+`ifdef ACCEL
+   rule rl_read_quire (cmd == RD_Q && ops_in_flight[2] == 3'b0);
+      let z = quire.read_quire;
+	  FloatU quire_out = tagged Q z;
+      ffO.enq (tuple2(quire_out,no_excep));
+      ffI.deq;
+
+      if (verbosity > 1)
+         $display ("%0d: %m.rl_read_quire: quire output ", cur_cycle);
+   endrule
+
+   rule rl_reset_quire (cmd == RST_Q && ops_in_flight[2] == 3'b0);
+	  let p = Posit_Extract {ziflag : ZERO};
+      quire.init.put(p);
+      ffI.deq;
+
+      if (verbosity > 1)
+         $display ("%0d: %m.rl_reset_quire ", cur_cycle);
+   endrule
+`endif
    // --------
    // Fused Operation MUL/DIV Phase: Stage 2
    let cmd_stg2 = cmd_stg2_f.first;
@@ -200,7 +227,9 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
 
       // Complete this operation as far as the CPU is concerned
       FloatU posit_out = tagged P 0;
+	`ifndef ACCEL
       ffO.enq(tuple2(posit_out, no_excep));
+	`endif
 
       if (verbosity > 1) begin
          $display ("%0d: %m.rl_fma_stg2: multiply ", cur_cycle);
@@ -223,7 +252,9 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
 
       // Complete this operation as far as the CPU is concerned
       FloatU posit_out = tagged P 0;
+	`ifndef ACCEL
       ffO.enq(tuple2(posit_out, no_excep));
+	`endif
 
       if (verbosity > 1) begin
          $display ("%0d: %m.rl_fda_stg2: divide ", cur_cycle);
@@ -272,7 +303,9 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
 
       // Complete this operation as far as the CPU is concerned
       FloatU posit_out = tagged P 0;
+	`ifndef ACCEL
       ffO.enq(tuple2(posit_out, no_excep));
+	`endif
 
       if (verbosity > 1) begin
          $display ("%0d: %m.rl_init_quire_stg2: initialize ", cur_cycle);
@@ -305,7 +338,7 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
       cmd_stg3_f.deq;
 
 `ifdef ACCEL
-			rg_queue[0] <= rg_queue[0] - 1;
+			ops_in_flight[1] <= ops_in_flight[1] - 1;
 `endif
 
       if (verbosity > 1) begin
@@ -323,7 +356,7 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
       cmd_stg3_f.deq;
 
 `ifdef ACCEL
-			rg_queue[0] <= rg_queue[0] - 1;
+			ops_in_flight[1] <= ops_in_flight[1] - 1;
 `endif
 
       if (verbosity > 1) begin
