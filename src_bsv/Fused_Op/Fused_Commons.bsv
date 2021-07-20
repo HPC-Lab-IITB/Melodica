@@ -26,6 +26,7 @@ package Fused_Commons;
 // Common functions and definitions used by fused operators
 // --------------------------------------------------------------
 
+import BUtils :: *;
 import Posit_User_Types :: *;
 import Posit_Numeric_Types :: *;
 
@@ -42,11 +43,25 @@ typedef struct {Bit#(1) sign1;
 //Input_posit is the data received from user
 //Input_posit consists of zero flag, infinity flag, sign of posit, scale , fraction for 2 inputs
 
+// Meta information about Quire
+typedef struct {
+   Bool        nan;
+   PositType   zi;
+   Bit #(LogQuireWidth) lead_one;
+} Quire_Meta deriving (Bits, FShow);
+
+instance DefaultValue #(Quire_Meta);
+   defaultValue = Quire_Meta {
+      nan   : False,
+      zi    : ZERO,
+      lead_one : 0
+   };
+endinstance
+	
 // Input for the accumulate operation in the quire
 typedef struct {
-   PositType         zi;
-   Bool              nan;
    Int #(QuireWidth) quire;
+   Quire_Meta        meta;
    Bit #(1)          frac_msb;
    Bit #(1)          frac_zero;
 } Quire_Acc deriving(Bits,FShow);
@@ -61,6 +76,61 @@ typedef struct {
                         scale = signExtend(s1)+signExtend(s2);
                         return scale;
         endfunction
+
+// Get the carry-Int-Frac value from the scale and frac values
+function Tuple4 #(
+     Bit #(QuireWidthMinus1)
+   , Bit #(LogQuireWidth)
+   , Bit #(1)
+   , Bit #(1)) calc_frac_int_alt (Bit #(FracWidthPlus1Mul2) f
+                              , Int #(ScaleWidthPlus2) s
+                              , Bit#(1) truncated_frac_msb_in
+                              , Bit#(1) truncated_frac_zero_in
+                             );
+
+   // Incoming frac: iifffffff....
+   // Take the incoming frac with the first two bits of int and place it msb first
+   // into the frac part of the quire.
+   // Proviso: sizeOf(FracWidthQ) > sizeOf (FracWidthPlus1Mul2)
+   Bit #(FracWidthQ) q_f = zExtendLSB(f);
+   Bit #(IntWidthQPlusFracWidthQ) q_if = extend (q_f);
+
+   // The << converts the q_if into i.ffffff form from .iiffffff. The radix point
+   // being the separator between i and f in q_if. However, the actual input was
+   // ii.fffff... so this shift actually means that the scale has to increment by
+   // 1 (despite the <<) 
+   q_if = q_if << 1;
+
+   // Increment the scale to account for alignment of the integer bit
+   s = s + 1;
+
+   // This is the number of zeros in cif before the leading one. For the scale = 0
+   // case, it is carry-width + int-width - 1 (for the 1.xxxxx case)
+   Bit #(LogQuireWidth) leading_one = fromInteger (
+      quire_carry_width + quire_int_width - 1);
+
+   // Positive scale. Shift radix point to the right or q_if to the left
+   if (s >= 0) begin // strictly > is sufficient, but >= infers simpler logic
+      Bit #(IntWidthQPlusFracWidthQ) shftamt = extend (pack (s));
+      q_if = q_if << shftamt;
+      leading_one = leading_one - extend (pack (s));
+   end 
+
+   else begin
+      s = abs(s);
+      Bit #(IntWidthQPlusFracWidthQ) shftamt = extend (pack (s));
+      q_if = q_if >> shftamt;
+      leading_one = leading_one + extend (pack (s));
+   end
+
+   // Include the carry, which is all zeros
+   Bit #(QuireWidthMinus1) q_cif = zeroExtend (q_if);
+   Bit #(1) truncated_frac_msb = truncated_frac_msb_in;
+   Bit #(1) truncated_frac_zero = ~truncated_frac_msb_in & truncated_frac_zero_in;
+
+   return tuple4(q_cif, leading_one, truncated_frac_msb, truncated_frac_zero);
+ endfunction
+
 
 // Get the carry-Int-Frac value from the scale and frac values
 function Tuple4 #(
@@ -107,18 +177,48 @@ function Tuple4 #(
    return tuple4(f_new,carry,truncated_frac_msb,truncated_frac_zero);
  endfunction
 
-   // This function is used to identify nan cases
-   function Bool fv_nan_check (
+   // This function is used to identify nan cases for mul
+   function Bool fv_nan_check_mul (
+      PositType z_i1, PositType z_i2, Bool nan1, Bool nan2
+   );
+      // Output NaN:
+      // MUL: INF*0, 0*INF, or either NaN
+      if (   (z_i1 == INF && z_i2 == ZERO)
+          || (z_i2 == INF && z_i1 == ZERO)
+          || (nan1 || nan2)) return True;
+
+      else return False;
+   endfunction
+
+   // This function is used to identify nan cases for divide
+   function Bool fv_nan_check_div (
       PositType z_i1, PositType z_i2, Bool nan1, Bool nan2
    );
       // Output NaN:
       // DIV: INF/INF, INF/ZERO, or either NaN
-      // MUL: INF*0, 0*INF, or either NaN
       if (   (z_i1 == INF && z_i2 == ZERO)
           || (z_i2 == INF && z_i1 == INF)
           || (nan1 || nan2)) return True;
 
       else return False;
+   endfunction
+
+   function Action fa_print_quire (Bit #(QuireWidth) qval);
+      action
+      let q = qval;
+      let sign = msb (q);
+      Bit #(FracWidthQ) qfrac = qval[(quire_frac_width-1):0];
+      qval = qval >> fromInteger (quire_frac_width);
+      Bit #(IntWidthQ) qint  = qval[(quire_int_width-1):0];
+      qval = qval >> fromInteger (quire_int_width);
+      Bit #(CarryWidthQ) qcarry = qval[(quire_carry_width-1):0];
+
+      $display ("   Quire fields:");
+      $display ("      sign : %b", sign);
+      $display ("      carry: %0h", qcarry);
+      $display ("      int: %0h", qint);
+      $display ("      frac: %0h", qfrac);
+      endaction
    endfunction
 
 endpackage

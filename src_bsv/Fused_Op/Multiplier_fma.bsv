@@ -29,6 +29,7 @@ package Multiplier_fma;
 import FIFOF               :: *;
 import GetPut              :: *;
 import ClientServer        :: *;
+import FShow               :: *;
 
 import Posit_Numeric_Types :: *;
 import Posit_User_Types    :: *;
@@ -43,7 +44,7 @@ typedef struct {
    Bit#(1) sign;
    Int#(ScaleWidthPlus2) scale;
    Bit#(FracWidthPlus1Mul2) frac;
-} Stage0_m deriving(Bits,FShow);
+} Mul_Stg1_In deriving(Bits, FShow);
 
 (* synthesize *)
 module mkMultiplier #(Bit #(2) verbosity) (
@@ -51,13 +52,13 @@ module mkMultiplier #(Bit #(2) verbosity) (
 );
 
    // make a FIFO to store 
-   FIFOF #(Quire_Acc)     fifo_output_reg <- mkFIFOF1;
-   FIFOF #(Stage0_m )  fifo_stage0_reg <- mkFIFOF1;
+   FIFOF #(Quire_Acc)   ff_to_quire <- mkFIFOF1;
+   FIFOF #(Mul_Stg1_In) ff_pipe_reg <- mkFIFOF1;
 
    // Identify zero or infinity cases depending only on the flag value of inputs
    function PositType fv_zi_check (PositType z_i1, PositType z_i2);
-      if (z_i1 == ZERO && z_i2 == ZERO)
-         // Both inputs are zero then output is zero
+      if (z_i1 == ZERO || z_i2 == ZERO)
+         // Either inputs are zero then output is zero
          return ZERO;
       else if (z_i1 == INF || z_i2 == INF)
          // one of the inputs is infinity then output is infinity
@@ -86,13 +87,13 @@ module mkMultiplier #(Bit #(2) verbosity) (
         
    // --------
    // Pipeline stages
-   // stage_1: Prepare the quire input
+   // stage_1: Prepare the input to the quire
    rule stage_1;
-      let dIn = fifo_stage0_reg.first; fifo_stage0_reg.deq;
+      let dIn = ff_pipe_reg.first; ff_pipe_reg.deq;
 
       // Get the carry-Int-Frac value from the scale and frac values
-      match {  .int_frac0
-             , .carry0
+      match {  .cif
+             , .lead_one
              , .truncated_frac_msb
              , .truncated_frac_zero} = calc_frac_int (  dIn.frac
                                                       , dIn.scale
@@ -102,29 +103,33 @@ module mkMultiplier #(Bit #(2) verbosity) (
       Bit #(CarryWidthQ) carry = extend(carry0);
 
       // the Quire value is signed extend
-      Bit #(QuireWidth) signed_carry_int_frac = {
-           dIn.sign
-         , ((dIn.sign == 1'b0) ? {carry, int_frac0}
-                               : twos_complement ({carry, int_frac0}))};
+      Bit #(QuireWidth) s_cif = {  dIn.sign
+                                 , (dIn.sign == 1'b0) ? cif
+                                                      : twos_complement (cif)};
 
-      // taking care of corner cases for zero infinity flag
-      let ziflag = (   (signed_carry_int_frac == 0)
-                    && (dIn.zi == REGULAR)) ? ZERO : dIn.zi;
-
-      let quire_in = Quire_Acc {
-         nan         : dIn.nan,
-         zi          : dIn.zi,
-         quire       : unpack (signed_carry_int_frac),                        
-         frac_msb    : truncated_frac_msb,
-         frac_zero   : truncated_frac_zero
+      let meta = Quire_Meta {
+           nan         : dIn.nan
+         , zi          : dIn.zi
+         , lead_one    : lead_one
       };
 
-      fifo_output_reg.enq (quire_in);
+      let quire_in = Quire_Acc {
+           quire       : unpack (s_cif)
+         , meta        : meta
+         , frac_msb    : truncated_frac_msb
+         , frac_zero   : truncated_frac_zero
+      };
+
+      ff_to_quire.enq (quire_in);
 
       if (verbosity > 1) begin
-         $display ("%0d: %m: stage_1: ", cur_cycle);
-         $display ("   int_frac0 %b carry0 %b", int_frac0,carry0);
-         $display ("   signed_carry_int_frac %b", signed_carry_int_frac);
+         $display ("%0d: %m.stage_1: ", cur_cycle);
+         if (verbosity > 2) begin
+            $display ("   frac_msb  : %0b", quire_in.frac_msb);
+            $display ("   frac_zero : %0b", quire_in.frac_zero);
+            $display ("   meta      : ", fshow (meta));
+            fa_print_quire (s_cif);
+         end
       end
    endrule
 
@@ -152,8 +157,8 @@ module mkMultiplier #(Bit #(2) verbosity) (
             , {zero_flag[0], ep2.frac});
 
          // Next stage prepares the output
-         let stage0_regf = Stage0_m {
-              nan : fv_nan_check (
+         let stage0_regf = Mul_Stg1_In {
+              nan : fv_nan_check_mul (
                  ep1.ziflag
                , ep2.ziflag
                , False
@@ -164,17 +169,16 @@ module mkMultiplier #(Bit #(2) verbosity) (
             , frac : frac0
          };
 
-         fifo_stage0_reg.enq(stage0_regf);
+         ff_pipe_reg.enq(stage0_regf);
 
          if (verbosity > 1) begin
-            $display ("%0d: %m: request: ", cur_cycle);
-            $display ("   zero-infinity-flag %b",stage0_regf.zi);
-            $display ("   sign0 %b",sign0);
-            $display ("   scale0 %b frac0 %b",scale0,frac0);
+            $display ("%0d: %m.request: ", cur_cycle);
+            if (verbosity > 2) 
+               $display ("   ", fshow (stage0_regf));
          end
       endmethod
    endinterface
-   interface Get response = toGet (fifo_output_reg);
+   interface Get response = toGet (ff_to_quire);
 endmodule
 
 endpackage: Multiplier_fma
