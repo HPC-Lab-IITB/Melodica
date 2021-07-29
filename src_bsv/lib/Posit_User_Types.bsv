@@ -55,10 +55,13 @@ import Posit_Numeric_Types :: *;
    typedef FracWidthQ                     IntWidthQ;//= FWQ
    typedef TSub#(QuireWidth,1)                  QuireWidthMinus1;//QW-1
    typedef QuireWidthMinus1                   CarryWidthPlusIntWidthPlusFracWidthQ;//QW-1= CWQ+FWQ+IWQ
+   typedef QuireWidthMinus1                   CarryIntFracWidthQ;//QW-1= CWQ+FWQ+IWQ
    typedef TLog#(CarryWidthPlusIntWidthPlusFracWidthQ)         LogCarryWidthPlusIntWidthPlusFracWidthQ;//log(QW-1)
    typedef TSub#(FracWidthQ,FracWidth)               FracWidthQMinusFracWidth;//FWQ-FW
    typedef TSub#(FracWidthQMinusFracWidth,FracWidth)         FracWidthQMinusFracWidthMul2;//FWQ-FracWidth*2
    typedef TAdd#(FracWidthQ,IntWidthQ)            IntWidthQPlusFracWidthQ;//IWQ+FWQ
+   typedef TAdd#(FracWidthQ,IntWidthQ)            IntFracWidthQ;//IWQ+FWQ
+   typedef TAdd#(IntFracWidthQ,1)            SIntFracWidthQ;//Signed (IWQ+FWQ)
 
    //Q-TO-P
    typedef TAdd#(LogCarryWidthPlusIntWidthPlusFracWidthQ,1)      LogCarryWidthPlusIntWidthPlusFracWidthQPlus1;
@@ -114,7 +117,8 @@ import Posit_Numeric_Types :: *;
    //generic fuction to find Two's complement for any number
    function Bit#(n) twos_complement(Bit#(n) x);
       //truncate from log(n-1) bits to log(n-1)-1 bits
-      return (truncate((1<<(valueOf(n)+1))-x)) ;   
+      // return (truncate((1<<(valueOf(n)+1))-x)) ;   
+      return (~x + 1);
    endfunction
 /*
    function Bit #(TLog#(n)) msb_zeros_n (

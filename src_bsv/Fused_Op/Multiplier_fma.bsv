@@ -92,21 +92,24 @@ module mkMultiplier #(Bit #(2) verbosity) (
       let dIn = ff_pipe_reg.first; ff_pipe_reg.deq;
 
       // Get the carry-Int-Frac value from the scale and frac values
-      match {  .cif
+      match {  .qif
              , .lead_one
              , .truncated_frac_msb
-             , .truncated_frac_zero} = calc_frac_int (  dIn.frac
+             , .truncated_frac_zero} = fn_calc_frac_int_mul (  dIn.frac
                                                       , dIn.scale
                                                       , 1'b0
                                                       , 1'b1);
-      // carry bit extended
-      Bit #(CarryWidthQ) carry = extend(carry0);
 
-      // the Quire value is signed extend
-      Bit #(QuireWidth) s_cif = {  dIn.sign
-                                 , (dIn.sign == 1'b0) ? cif
-                                                      : twos_complement (cif)};
+      // the value to be sent for accumulation has zero carry. So, it is
+      // sufficient to convert qif to signed form. The zero carry can be added in
+      // at the accumulator
+      Bit #(SIntFracWidthQ) s_if = {  dIn.sign
+                                    , (dIn.sign == 1'b0) ? qif
+                                                          : twos_complement (qif)};
 
+      // consider adding trailing zeros, together they will fix the non-zero
+      // bits in the qif. If we can do it right, the quire addition can be reduced
+      // to three 32-bit adds
       let meta = Quire_Meta {
            nan         : dIn.nan
          , zi          : dIn.zi
@@ -114,7 +117,7 @@ module mkMultiplier #(Bit #(2) verbosity) (
       };
 
       let quire_in = Quire_Acc {
-           quire       : unpack (s_cif)
+           quire       : unpack (s_if)
          , meta        : meta
          , frac_msb    : truncated_frac_msb
          , frac_zero   : truncated_frac_zero
@@ -128,7 +131,10 @@ module mkMultiplier #(Bit #(2) verbosity) (
             $display ("   frac_msb  : %0b", quire_in.frac_msb);
             $display ("   frac_zero : %0b", quire_in.frac_zero);
             $display ("   meta      : ", fshow (meta));
-            fa_print_quire (s_cif);
+
+            // Before printing quire add the carry (sign-extension)
+            Int #(QuireWidth) s_cif = signExtend (unpack (s_if));
+            fa_print_quire (pack (s_cif));
          end
       end
    endrule

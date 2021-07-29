@@ -23,6 +23,9 @@ package PositCore;
 // --------------------------------------------------------------
 // This package implements the top-level of the Posit Arithmetic Unit that
 // integrates into Clarinet's pipeline as a functional unit peer of the FPU.
+//
+// Known Problems:
+//    1. DIV pipeline hangs
 // --------------------------------------------------------------
 
 // Library imports
@@ -131,10 +134,10 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
    Server #(Posit_Extract, Float_Extract)    ptof     <- mkPtoF_PNE (verbosity);        
 `endif
 
-   FIFO #(PositCmds)                   cmd_stg2_f     <- mkFIFO1;
-   FIFO #(PositCmds)                   cmd_stg3_f     <- mkFIFO1;
+   FIFO #(PositCmds)                   cmd_stg2_f     <- mkFIFO;
+   FIFO #(PositCmds)                   cmd_stg3_f     <- mkFIFO;
 
-   FIFO #(Posit_Req)                   ffI            <- mkFIFO1;
+   FIFO #(Posit_Req)                   ffI            <- mkFIFO;
    FIFO #(Fpu_Rsp)                     ffO            <- mkFIFO1;
 
 
@@ -207,9 +210,10 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
       multiplier.request.put (tuple2 (ext_out1, ext_out2));
       cmd_stg3_f.enq (cmd_stg2); cmd_stg2_f.deq;
 
+      // This operation is marked complete before dispatching to PositCore.
       // Complete this operation as far as the CPU is concerned
-      FloatU posit_out = tagged P 0;
-      ffO.enq(tuple2(posit_out, no_excep));
+      // FloatU posit_out = tagged P 0;
+      // ffO.enq(tuple2(posit_out, no_excep));
 
       if (verbosity > 1) begin
          $display ("%0d: %m.rl_fma_stg2: multiply ", cur_cycle);
@@ -230,9 +234,10 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
       divider.request.put (tuple2 (ext_out1, ext_out2));
       cmd_stg3_f.enq (cmd_stg2); cmd_stg2_f.deq;
 
+      // This operation is marked complete before dispatching to PositCore.
       // Complete this operation as far as the CPU is concerned
-      FloatU posit_out = tagged P 0;
-      ffO.enq(tuple2(posit_out, no_excep));
+      // FloatU posit_out = tagged P 0;
+      // ffO.enq(tuple2(posit_out, no_excep));
 
       if (verbosity > 1) begin
          $display ("%0d: %m.rl_fda_stg2: divide ", cur_cycle);
@@ -276,12 +281,13 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
    rule rl_init_quire_stg2 (cmd_stg2 == FCVT_R_P);
       let ext_out1 <- extracter1.response.get();
       let discard  <- extracter2.response.get();
-      quire.init.put (ext_out1);
+      quire.init (ext_out1);
       cmd_stg2_f.deq;
 
+      // This operation is marked complete before dispatching to PositCore.
       // Complete this operation as far as the CPU is concerned
-      FloatU posit_out = tagged P 0;
-      ffO.enq(tuple2(posit_out, no_excep));
+      // FloatU posit_out = tagged P 0;
+      // ffO.enq(tuple2(posit_out, no_excep));
 
       if (verbosity > 1) begin
          $display ("%0d: %m.rl_init_quire_stg2: initialize ", cur_cycle);
@@ -310,7 +316,7 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
    // Stage 3: FMA/FMS Compute: Accumulate
    rule rl_fma_stg3 ((cmd_stg3 == FMA_P) || (cmd_stg3 == FMS_P));
       let quire_increment <- multiplier.response.get ();
-      quire.accumulate.put (quire_increment);
+      quire.accumulate (quire_increment);
       cmd_stg3_f.deq;
 
       if (verbosity > 1) begin
@@ -324,7 +330,7 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
    // Stage 3: FDA/FDS Compute: Accumulate
    rule rl_fda_stg3 ((cmd_stg3 == FDA_P) || (cmd_stg3 == FDS_P));
       let quire_increment <- divider.response.get ();
-      quire.accumulate.put (quire_increment);
+      quire.accumulate (quire_increment);
       cmd_stg3_f.deq;
 
       if (verbosity > 1) begin

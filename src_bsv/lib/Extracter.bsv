@@ -93,7 +93,7 @@ endfunction
 module mkExtracter #(Bit #(2) verbosity) (Server #(Posit, Posit_Extract));
    // make a FIFO to store data at the end of each stage of the pipeline, and also
    // for input and outputs
-   FIFO #(Posit_Extract) ff_extract_out <- mkFIFO1;
+   FIFO #(Posit_Extract) ff_extract_out <- mkFIFO;
 
    interface Put request;
       method Action put (Posit p);

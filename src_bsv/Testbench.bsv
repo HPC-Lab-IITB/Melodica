@@ -11,9 +11,8 @@ import Utils  :: *;
 (* synthesize *)
 module mkTestbench (Empty);
    PositCore_IFC pc <- mkPositCore;
-   Reg #(Bit #(3)) rg_state <- mkReg (0);
-   Bit #(3) num_fmas = 3;
-   Reg #(Bit #(3)) rg_rsp <- mkReg (0);
+   Reg #(Bit #(5)) rg_state <- mkReg (0);
+   Bit #(5) num_fmas = 31;
    rule rl_nb_req (rg_state < num_fmas);
       FloatingPoint::RoundMode round_mode = Rnd_Nearest_Even;
       PositCmds opcodes = FMA_P;
@@ -27,7 +26,7 @@ module mkTestbench (Empty);
       $display("%0d: %m.rl_nb_req ", cur_cycle);
       $display("   in1 %h in2 %h opcode %b"
          , tpl_1(inp_posit).P, tpl_2(inp_posit).P, tpl_4(inp_posit));
-      endrule
+   endrule
 
    rule rl_read_out (rg_state == num_fmas);
       PositCmds opcodes = FCVT_P_R;
@@ -43,12 +42,12 @@ module mkTestbench (Empty);
          , tpl_1(inp_posit).P, tpl_2(inp_posit).P, tpl_4(inp_posit));
    endrule
 
+   // Catch the response for the FCVT_P_R
    rule rl_rsp;
       let z <- pc.server_core.response.get ();
-      rg_rsp <= rg_rsp + 1;
       $display("%0d: %m.rl_rsp: out %h exception %b",cur_cycle,tpl_1(z).P,tpl_2(z));
 
-      if (rg_rsp == num_fmas) $finish;  // this is the second and last response
+      $finish;  // this is the second and last response
    endrule
 
 endmodule

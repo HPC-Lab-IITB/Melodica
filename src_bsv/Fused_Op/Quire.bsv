@@ -25,6 +25,10 @@ package Quire;
 //
 //    mkQuire: Implements the quire register:
 //             addition, initialization and read-out
+//
+// Known Problems:
+//    1. The pipelined accumulation system does not detect NaN in
+//       in the quire or in the input from the multiplier.
 // --------------------------------------------------------------
 
 // Library imports
@@ -33,6 +37,7 @@ import GetPut              :: *;
 import FShow               :: *;
 import DefaultValue        :: *;
 import BUtils              :: *; // for zExtendLSB and friends
+import Vector              :: *;
 
 import Posit_Numeric_Types :: *;
 import Posit_User_Types    :: *;
@@ -43,28 +48,29 @@ import Utils               :: *;
 
 // --------
 // Local Types
-//
-// Intermediate pipe stage for accumulation
-typedef struct {
-   Int #(QuireWidth) sum_calc;
-   Bit #(1)          q2_truncated_frac_zero;
-   Bit #(1)          q2_truncated_frac_notzero;
-   PositType         q2_zi;
-   Bool              q2_nan;
-} Acc_Stg1_In deriving (Bits, FShow);
+// --------
+// The segment in the segmented adder
+typedef Bit #(32) Segment;
+typedef Bit #(33) SegmentWCarry;
+
+// Number of segments that make up a quire
+typedef TDiv #(QuireWidth, 32) N_Segs;
+typedef TSub #(N_Segs, 1) N_SegsSub1;
 
 // --------
-// Interface
+// Interface Definition
+// --------
 //
 interface Quire_IFC;
-   interface Put #(Quire_Acc) accumulate;    // add a value into the quire
-   interface Put #(Posit_Extract) init;      // initialize a valu in quire
+   method Action accumulate (Quire_Acc x);   // add a value into the quire
+   method Action init (Posit_Extract x);     // initialize a valu in quire
    method Action read_req;                   // start quire read
    interface Get #(Prenorm_Posit) read_rsp;  // quire read response
 endinterface
 
 // --------
 // Functions
+// --------
 //
 // checks for nan 100..00
 function Bool is_nan (Bit#(1) sign, Bool is_zero);
@@ -76,11 +82,11 @@ endfunction
 //                 , Bool
 //                 , Bool
 function Tuple2 #(Bit #(LogQuireWidth)
-                , Bit#(IntWidthQPlusFracWidthQ)) fv_calc_frac_int (
+                , Bit#(IntFracWidthQ)) fv_calc_frac_int (
      Bit #(FracWidth) f
    , Int #(ScaleWidthPlus1) s
 );
-   Bit #(IntWidthQPlusFracWidthQ) f_new = extend(f);
+   Bit #(IntFracWidthQ) f_new = extend(f);
    Bit #(FracWidthQ) qf = zExtendLSB (f); 
    Bit #(IntWidthQ) qi = 1;
 
@@ -92,9 +98,9 @@ function Tuple2 #(Bit #(LogQuireWidth)
       quire_carry_width + quire_int_width - 1);
 
    // Positive scale. Shift radix point to the right or {qi, qf} to the left
-   Bit #(IntWidthQPlusFracWidthQ) qif = {qi, qf};
+   Bit #(IntFracWidthQ) qif = {qi, qf};
    if (s >= 0) begin // strictly > is sufficient, but >= infers simpler logic
-      Bit #(IntWidthQPlusFracWidthQ) shftamt = extend (pack (s));
+      Bit #(IntFracWidthQ) shftamt = extend (pack (s));
       qif = qif << shftamt;
       leading_one = leading_one - extend (pack (s));
    end
@@ -102,7 +108,7 @@ function Tuple2 #(Bit #(LogQuireWidth)
    // Negative scale. Shift radix point to the left or {qi, qf} to the right
    else begin
       s = abs(s);
-      Bit #(IntWidthQPlusFracWidthQ) shftamt = extend (pack (s));
+      Bit #(IntFracWidthQ) shftamt = extend (pack (s));
       qif = qif >> shftamt;
       leading_one = leading_one + extend (pack (s));
    end
@@ -114,217 +120,305 @@ endfunction
 // restricted availability of regime bits fraction bits will be shifted to take
 // care of the scale value change due to it being bounded output : bounded
 // scale value and the shift in frac bits
-function Int #(ScaleWidthPlus1) calculate_scale_shift (
-     Int #(LogCarryWidthPlusIntWidthPlusFracWidthQPlus1) scale
+function Tuple2 #(Bool, Int #(ScaleWidthPlus1)) fn_bound_scale (
+     Int #(LogQuireWidth) scale
    , Int #(ScaleWidthPlus1) maxB
    , Int #(ScaleWidthPlus1) minB
 );
-   Int#(ScaleWidthPlus1) scale0;
+   Int#(ScaleWidthPlus1) scale0 = truncate (scale);
+   Bool bounded = True;
    // frac_change gives the number of bits that are more or less than scale bounds
    // so that we can shift the frac bits to not lose scale information 
-   if (scale < signExtend(minB))       scale0 = minB; // min bound scale
-   else if (scale > signExtend(maxB))  scale0 = maxB; // max bound scale
-   else                                scale0 = truncate(scale);  //no change
-   return scale0;
+   if (scale < signExtend(minB)) begin
+      scale0 = minB; // min bound scale
+      bounded = False;
+   end
+   else if (scale > signExtend(maxB)) begin
+      scale0 = maxB; // max bound scale
+      bounded = False;
+   end
+   return (tuple2 (bounded, scale0));
 endfunction
 
+
+// --------
+// Segmented leading zero counter
+// --------
+interface CounterIFC;
+   method Action count (Quire x);
+endinterface
+
+module mkSegZeroCounter #(
+     Vector #(N_Segs, Reg #(Bit#(1))) vrg_quire_seg_zero
+   , FIFO #(Bit #(LogQuireWidth)) ff_numZeros
+) (CounterIFC);
+   Reg #(Bool) rg_seg_counter_busy <- mkReg (False);
+   Reg #(Bit #(TLog #(N_Segs))) rg_numZeroSegs <- mkRegU;
+   Reg #(Segment) rg_firstNonZeroSeg <- mkRegU;
+
+   rule rl_countZerosInLeadingSeg (rg_seg_counter_busy);
+      let zerosInNonZeroSeg = countZerosMSB (rg_firstNonZeroSeg);
+      Bit #(LogQuireWidth) numZeroSegs = extend (rg_numZeroSegs);
+
+      // Num-Zeros = (Num-Zero-Segs * 32) + (Num-Zero-Selected-Seg)
+      let numZeros = numZeroSegs << 5;
+      numZeros = numZeros + extend (pack (zerosInNonZeroSeg));
+      ff_numZeros.enq (numZeros);
+      rg_seg_counter_busy <= False;
+   endrule
+
+   method Action count (Quire x) if (!rg_seg_counter_busy);
+      Vector #(N_Segs, Segment) v_longData = unpack (x);
+      let v_segIsZero = readVReg (vrg_quire_seg_zero);
+      Bit #(N_Segs) segIsZero = pack (v_segIsZero);
+
+      // Count the number of leading segments which are 0s
+      let segIsNonZero = ~segIsZero;
+      let numZeroSegsMSB = countZerosMSB (segIsNonZero);
+      rg_numZeroSegs <= truncate (pack (numZeroSegsMSB));
+
+      // Rotate quire to align the first non-zero segment as MSB
+      UInt #(TLog #(N_Segs)) rotationBy = truncate (numZeroSegsMSB);
+      v_longData = rotateBy (v_longData, rotationBy);
+      rg_firstNonZeroSeg <= v_longData [valueOf (N_Segs) - 1];
+
+      rg_seg_counter_busy <= True;
+   endmethod
+endmodule
+
+// --------
+// Long adder
+// Pipelined segmented adder
+// --------
+interface AdderIFC;
+   method Action acc (Quire x);
+   method Bool   busy;
+endinterface
+
+module mkSegAdder #(
+        Vector #(N_Segs, Reg #(Segment)) vrg_accumulator
+      , Vector #(N_Segs, Reg #(Bit#(1))) vrg_segIsZero
+   ) (AdderIFC);
+   Vector #(N_Segs, FIFO #(Segment)) vff_in <- replicateM (mkSizedFIFO (4));
+   Vector #(N_SegsSub1, FIFO#(Bit #(1))) vff_carry <- replicateM (mkSizedFIFO (4));
+   Reg #(Bit #(TLog #(N_Segs))) rg_inFlight <- mkReg(0);
+
+   Bool accIsBusy = (rg_inFlight != 0);
+
+   rule acc_stage_0 (accIsBusy);
+      SegmentWCarry acc = extend (vrg_accumulator[0]);
+      SegmentWCarry in  = extend (vff_in[0].first); vff_in[0].deq;
+      acc = acc + in;
+      vff_carry[0].enq (msb (acc));
+
+      Segment acc_seg = truncate (acc);
+      vrg_accumulator[0] <= acc_seg;
+      vrg_segIsZero[0] <= pack (acc_seg == 0);
+   endrule
+
+   for (Integer i = 1; i < valueOf (N_Segs); i = i+1) begin
+      rule acc_stage_i (accIsBusy);
+         SegmentWCarry acc = extend (vrg_accumulator[i]);
+         SegmentWCarry in  = extend (vff_in[i].first); vff_in[i].deq;
+         SegmentWCarry cin = extend (vff_carry[i-1].first); vff_carry[i-1].deq;
+         acc = acc + in + cin;
+
+         Segment acc_seg = truncate (acc);
+         vrg_accumulator[i] <= acc_seg;
+         vrg_segIsZero[i] <= pack (acc_seg == 0);
+
+         if (i == valueOf (N_SegsSub1)) 
+            rg_inFlight <= rg_inFlight - 1;
+         
+         else 
+            vff_carry[i].enq (msb (acc));
+      endrule
+   end
+
+   method Action acc (Quire x);
+      Vector #(N_Segs, Segment) v_x = unpack (x);
+      for (Integer i = 0; i < valueOf (N_Segs); i = i+1)
+         vff_in [i].enq (v_x[i]);
+      rg_inFlight <= rg_inFlight + 1;
+   endmethod
+
+   method Bool busy = accIsBusy;
+endmodule
+
+
+// --------
+// The Quire top-level
 // --------
 (* synthesize *)
 module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
-   Reg #(Bit #(QuireWidth))         rg_quire          <- mkReg (0);
-   Reg #(Bool)                      rg_quire_busy     <- mkReg (False);
+   Vector #(N_Segs, Reg #(Segment)) vrg_quire         <- replicateM (mkReg(0));
+   Vector #(N_Segs, Reg #(Bit#(1))) vrg_quire_seg_zero<- replicateM (mkReg (0));
+   FIFO #(Bit #(LogQuireWidth))     ff_num_msb_zeros  <- mkFIFO1;
    Reg #(Quire_Meta)                rg_quire_meta     <- mkReg (defaultValue);
+   Reg #(Bool)                      rg_read_busy      <- mkReg (False);
 
-   // Inputs to Stage 1 of quire accumulation pipeline
-   FIFO  #(Acc_Stg1_In)             acc_stg1_f        <- mkFIFO1;
+   // Pipelined long adder
+   AdderIFC                         seg_adder         <- mkSegAdder (vrg_quire, vrg_quire_seg_zero);
+   CounterIFC                       zero_counter      <- mkSegZeroCounter (vrg_quire_seg_zero, ff_num_msb_zeros);
 
    // Pre-normalized posit output from reading the quire
    FIFO  #(Prenorm_Posit)           posit_rsp_f       <- mkFIFO1;
 
    Int#(ScaleWidthPlus1) maxB, minB;
 
+   Bool quire_is_zero = unpack (reduceOr (pack (readVReg (vrg_quire_seg_zero))));
+
    // max scale value is defined here... have to saturate the scale value 
    // max value = (N-2)*(2^es) 
    // scale = regime*(2^es) + expo.... max value of regime = N-2(00...1)
-   maxB = fromInteger((valueOf(PositWidth) -2)*(2**(valueOf(ExpWidth))));
+   maxB = fromInteger((valueOf(PositWidth) - 2)*(2**(valueOf(ExpWidth))));
 
    // similarly calculate the min 
    minB = -maxB;	
 
    // --------
-   // Pipeline stages
-   // Pipe stage -- rounding and special cases
-   rule rounding_special_cases (rg_quire_busy);
-      let dIn = acc_stg1_f.first;  acc_stg1_f.deq;
-      Bit#(1) flag_truncated_frac = (lsb(dIn.sum_calc) & dIn.q2_truncated_frac_zero) | dIn.q2_truncated_frac_notzero;
-      let sign = msb(dIn.sum_calc);
-      Bit#(2) truncated_frac = (flag_truncated_frac == 1'b0) ? 2'b00
-                                                             : {sign, flag_truncated_frac};
-      Int#(QuireWidth) sum_calc = boundedPlus (dIn.sum_calc, signExtend(unpack(truncated_frac)));
-      Bit#(QuireWidthMinus1) sum_calc_unsigned = truncate(pack(sum_calc));
-      Bit#(1) all_bits_0 = ~reduceOr(sum_calc_unsigned);
-      Bool sum_is_zero = (sum_calc_unsigned == 0);
+   // Behavior
+   // --------
+   //
+   // Return the absolute value and sign of a quire
+   function Tuple2 #(Bit #(1), Bit #(QuireWidthMinus1)) fn_abs_quire;
+      Quire quire = pack (readVReg (vrg_quire));
+      Bit #(QuireWidthMinus1) s_cif = quire [valueOf(QuireWidthMinus2):0];
+      let sign = msb (vrg_quire [valueOf (N_Segs) - 1]);
 
-      PositType zero_infinity_flag =  ((sum_is_zero && (sign == 1'b0))
-                                    && (rg_quire_meta.zi == REGULAR)
-                                    && (dIn.q2_zi == REGULAR)) ? ZERO : REGULAR;
+      Bit #(QuireWidthMinus1) cif = (sign == 1'b0) ? s_cif
+                                                   : twos_complement (s_cif);
+      return (tuple2 (sign, cif));
+   endfunction
 
-      // Put together the meta information on the quire
-      let meta = Quire_Meta {
-         nan   : (   (is_nan (sign, sum_is_zero))
-                  || (dIn.q2_nan)
-                  || (rg_quire_meta.zi == INF)
-                  || (dIn.q2_zi == INF)),
-         zi    : zero_infinity_flag
-      };
+   // Complete the steps to generate a read response to a quire read request
+   rule rl_read_response ((rg_read_busy) && (!seg_adder.busy));
+      let msbZeros = ff_num_msb_zeros.first; ff_num_msb_zeros.deq;
 
-      // Write the quire register based on the fields
-      if (meta.nan)              rg_quire <= {1'b1, '0};
-      else if (meta.zi == ZERO)  rg_quire <= 0;
-      else                       rg_quire <= {sign, sum_calc_unsigned};
+      match {.sign, .cif} = fn_abs_quire;
 
-      rg_quire_meta <= meta;
-      rg_quire_busy <= False;
-   endrule
+      // calculate scale
+      Int #(LogQuireWidth) quire_scale =
+         boundedMinus (  fromInteger (valueof (CarryWidthPlusIntWidthQ))
+                       , (unpack (extend (msbZeros))+1));
 
-   interface Put accumulate;
-      method Action put (Quire_Acc q) if (!rg_quire_busy);
-         // Quire operations cannot be pipelined as there is a WAR dependency
-         rg_quire_busy <= True;
+      // saturate scale beyond maxB, minB
+      match {.bounded, .scale} = fn_bound_scale (quire_scale, maxB, minB);
 
-         // signed sum of the values since the numbers are integer.fractions
-         Int#(QuireWidth) sum_calc = boundedPlus (unpack (rg_quire), q.quire);
+      // Shift and create the fraction based on the scale value taking care of
+      // overflows and underflows. The fraction bits are aligned starting from the
+      // msb of cif. The hidden bit is discarded.
 
-         // check for special cases
-         let acc_stg1_in = Acc_Stg1_In {
-              sum_calc : sum_calc
-            , q2_truncated_frac_zero : q.frac_msb & q.frac_zero
-            , q2_truncated_frac_notzero : q.frac_msb & ~(q.frac_zero)
-            , q2_zi : q.zi
-            , q2_nan : q.nan
-         };
+      Bit#(FracWidth) frac;
+      Bit#(1) frac_round_msb;
+      Bit#(1) frac_round_zero; 
 
-         acc_stg1_f.enq (acc_stg1_in);
+      // Bounded scale
+      if (bounded) begin
+         Bit #(QuireWidthMinus1) shftamt = extend (msbZeros);
+         cif = cif << shftamt;   // align 1.ffff with msb of cif
+         cif = cif << 1;         // get rid of the hidden bit
 
-         if (verbosity > 1) begin
-            $display ("%0d: %m: accumulate: ", cur_cycle);
-            if (verbosity > 2) begin
-               $display ("   q1 %b", rg_quire);
-               $display ("   q2 %b", q.quire);
-               $display ("   ", fshow (acc_stg1_in));
-            end
-         end
-      endmethod
-   endinterface
+         // extract the frac bits from the shifted quire bits
+         frac = truncateLSB (cif);
 
-   interface Put init;
-      method Action put (Posit_Extract p) if (!rg_quire_busy);
-         // match {.lead_one, .qif} = fv_calc_frac_int ({1'b1, p.frac}, p.scale);
-         match {.lead_one, .qif} = fv_calc_frac_int (p.frac, p.scale);
-
-         // Sign extend the Quire value
-         Bit #(CarryWidthQ) carry = 0;
-         Bit#(QuireWidth) s_carry_int_frac = (p.sign == 1'b0) ? {p.sign, carry, qif}
-                                                              : {p.sign, twos_complement ({carry, qif})};
-         rg_quire <= s_carry_int_frac;
-
-         // Fill in the meta details to qualify the rg_quire bits
-         let qm = Quire_Meta {
-              nan : (p.ziflag == INF)
-            , zi  : p.ziflag
-            , lead_one : lead_one
-         };
-
-         rg_quire_meta <= qm;
-
-         if (verbosity > 1) begin
-            $display ("%0d: %m: init: ", cur_cycle);
-         end
-      endmethod
-   endinterface
-
-   // Verify by running a p2q-q2p standalone testbench. 
-   method Action read_req if (!rg_quire_busy);
-      // initialize prenorm_posit with value for a zero (or NaR) quire
-      let prenorm_posit = Prenorm_Posit {
-           sign      : 0
-         , nan       : rg_quire_meta.nan
-         , zi        : rg_quire_meta.zi
-         , scale     : 0
-         , frac      : 0
-         , frac_msb  : 1'b0
-         , frac_zero : 1'b1
-      };
-
-
-      // Quire is a regular number. Look at the bit pattern in rg_quire.
-      if ((rg_quire_meta.zi == REGULAR) && (!rg_quire_meta.nan)) begin
-         // Depending on the sign of the quire, interpret the rest for the bits
-         Bit #(QuireWidthMinus1) cif = rg_quire [valueOf(QuireWidthMinus2):0];
-         let sign = msb (rg_quire);
-         Bit #(QuireWidthMinus1) s_cif = (sign == 1'b0) ? cif
-                                                        : twos_complement (cif);
-         let msbZeros = rg_quire_meta.lead_one;
-
-         // calculate scale
-         Int #(LogCarryWidthPlusIntWidthPlusFracWidthQPlus1) scale_temp =
-            boundedMinus (  fromInteger (valueof (CarryWidthPlusIntWidthQ))
-                          , (unpack (extend (msbZeros))+1));
-
-         let nan = rg_quire_meta.nan;
-         let ziflag = rg_quire_meta.zi;
-         let scale = calculate_scale_shift (scale_temp, maxB, minB);
-
-         // Pre-normalized posit fields
-         Bit#(FracWidthPlus1) frac_p;
-         PositType zi = (   (s_cif == 0)
-                         && (ziflag == REGULAR)) ? ZERO : ziflag;
-         Bit#(1) frac_msb_p;
-         Bit#(1) frac_zero_p; 
-
-         // interpret the scale to calculate number of fraction bit shifts required 
-         if(scale < maxB) begin
-            UInt #(LogCarryWidthPlusIntWidthPlusFracWidthQPlus1) truncate_msbZeros = unpack(
-               pack (fromInteger (valueof (CarryWidthPlusIntWidthQ)) - signExtend(scale) - 1));
-
-            // shift to get the frac bits 
-            let carry_int_frac_shifted =  (s_cif << truncate_msbZeros);
-
-            // extract the frac bits from the shifted quire bits
-            frac_p = carry_int_frac_shifted [valueOf (QuireWidthMinus2) : valueOf (QuireWidthMinus2MinusFracWidth)];
-
-            // the following flags are for rounding
-            // the msb of the rest of the quire 
-            frac_msb_p = carry_int_frac_shifted [valueOf (QuireWidthMinus3MinusFracWidth)];
-
-            // get the remaining bits by truncating it to see if they are all 0's
-            Bit #(QuireWidthMinus3MinusFracWidth) truncate_carry_int_frac_shifted = truncate (carry_int_frac_shifted);
-            frac_zero_p = (truncate_carry_int_frac_shifted == 0) ? 1'b1 : 1'b0;
-         end
-
-         // quire overflow
-         else begin
-            frac_p = '1;
-            frac_msb_p = 1'b1;
-            frac_zero_p = 1'b0;
-         end
-
-         // Prepare the Prenorm_Posit for the normalizer
-         prenorm_posit.sign      = sign;
-         prenorm_posit.scale     = pack(scale);
-         prenorm_posit.frac      = msb(frac_p) == 0 ? truncate (frac_p>>1)
-                                                    : truncate (frac_p);
-         prenorm_posit.frac_msb  = (zi == ZERO) ? 1'b0 : frac_msb_p;
-         prenorm_posit.frac_zero = (zi == ZERO) ? 1'b1 : frac_zero_p;
+         // Extract the flags for rounding:
+         // The msb of the remaining frac bits indicating if we are over 0.5
+         // (msb = 1) or under (msb = 0).  
+         // Excluding the msb, is the rest of the bits zero (lower quadrant: 0.00
+         // to 0.25 or 0.50 to 0.75) or non-zero (upper quadrant)
+         cif = cif << valueOf (FracWidth);
+         frac_round_msb = msb (cif);
+         cif = cif << 1;
+         frac_round_zero = (cif == 0) ? 1'b1 : 1'b0;
       end
 
+      // Overflow/Underflow
+      else begin
+         frac = '1;
+         frac_round_msb = 1'b1;
+         frac_round_zero = 1'b0;
+      end
+
+      let prenorm_posit = Prenorm_Posit {
+           sign      : sign
+         , nan       : False  // look at known problems
+         , zi        : REGULAR
+         , scale     : pack (scale)
+         , frac      : frac
+         , frac_msb  : frac_round_msb
+         , frac_zero : frac_round_zero
+      };
+
       posit_rsp_f.enq (prenorm_posit);
+      rg_read_busy <= False;
       if (verbosity > 1) begin
-         $display ("%0d: %m: read_req: ", cur_cycle);
+         $display ("%0d: %m.rl_read_response", cur_cycle);
          if (verbosity > 2) begin
-            $display ("   Quire Meta: ", fshow (rg_quire_meta));
-            fa_print_quire (rg_quire);
+            fa_print_quire (pack (readVReg (vrg_quire)));
          end
+      end
+   endrule
+
+   // --------
+   // Interfaces
+   // --------
+   method Action accumulate (Quire_Acc q) if (!rg_read_busy);
+      // initiate the accumulation of the input into the quire
+      // The signExtend adds the empty carry bits
+      Int #(QuireWidth) quire_in = signExtend (q.quire);
+      seg_adder.acc (pack (quire_in));
+   endmethod
+
+   method Action init (Posit_Extract p) if ((!seg_adder.busy) && (!rg_read_busy));
+      match {.lead_one, .qif} = fv_calc_frac_int (p.frac, p.scale);
+
+      // Sign extend the Quire value -- consider using a narrower mux by operating
+      // on q_if
+      Bit #(CarryWidthQ) carry = 0;
+      Bit#(QuireWidth) s_cif = (p.sign == 1'b0) ? {p.sign, carry, qif}
+                                                : {p.sign, twos_complement ({carry, qif})};
+
+      Vector #(N_Segs, Segment) v_s_cif = unpack (s_cif); 
+      writeVReg (vrg_quire, v_s_cif);
+
+      // Fill in the meta details to qualify the quire bits
+      let qm = Quire_Meta {
+           nan : (p.ziflag == INF)
+         , zi  : p.ziflag
+         , lead_one : lead_one
+      };
+
+      rg_quire_meta <= qm;
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m: init: ", cur_cycle);
+      end
+   endmethod
+
+   // Verify by running a p2q-q2p standalone testbench. 
+   method Action read_req if ((!seg_adder.busy) && (!rg_read_busy));
+      // Special cases -- zero quire
+      if (quire_is_zero) begin
+         // initialize prenorm_posit with value for a zero (or NaR) quire
+         let prenorm_posit = Prenorm_Posit {
+              sign      : 0
+            , nan       : False  // look at known problems
+            , zi        : ZERO
+            , scale     : 0
+            , frac      : 0
+            , frac_msb  : 1'b0
+            , frac_zero : 1'b1
+         };
+         posit_rsp_f.enq (prenorm_posit);
+      end
+
+      // REGULAR quire
+      else begin
+         // Depending on the sign of the quire, interpret the rest for the bits
+         match {.sign, .cif} = fn_abs_quire;
+         zero_counter.count (pack ({1'b0, cif}));
+         rg_read_busy <= True;
       end
    endmethod
 

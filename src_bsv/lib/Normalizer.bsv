@@ -65,7 +65,7 @@ typedef struct {
 module mkNormalizer #(Bit #(2) verbosity) (Server #(Prenorm_Posit, Norm_Posit));
 
    // make a FIFO to store data at the end of each stage of the pipeline, and also for input and outputs
-   FIFO #(Norm_Posit) fifo_output_reg <- mkFIFO1;
+   FIFO #(Norm_Posit) fifo_output_reg <- mkFIFO;
 
    // Posit# (N, ES)
    Integer es_int = valueOf(ExpWidth);

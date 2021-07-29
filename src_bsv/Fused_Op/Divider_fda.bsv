@@ -81,23 +81,22 @@ module mkDivider #(Bit #(2) verbosity) (
          {1'b0, quotient}, dIn.scale, frac_msb, frac_zero);
 
       // carry bit extended
-      Bit #(CarryWidthQuire) carry = extend(carry0);
+      Bit #(CarryWidthQ) carry = extend(carry0);
 
       // the Quire value is sign-extended
-      Bit #(QuireWidth) quire = (dIn.sign == 1'b0) ? {dIn.sign, carry, int_frac0}
-                                                   : {  dIn.sign
-                                                      , twos_complement ({carry, int_frac0})
-                                                     };
+      Bit #(SIntFracWidthQ) s_if = {  dIn.sign
+                                    , (dIn.sign == 1'b0) ? int_frac0
+                                                         : twos_complement (int_frac0)};
 
       // taking care of corner cases for zero infinity flag
-      PositType ziflag0 = ((quire == 0) && (dIn.ziflag == REGULAR)) ? ZERO
-                                                                    : dIn.ziflag;
+      PositType ziflag0 = ((s_if == 0) && (dIn.ziflag == REGULAR)) ? ZERO
+                                                                   : dIn.ziflag;
 
       // The output quire. Also include the case when fraction bit msb = 0
       let quire_in = Quire_Acc {
          nan         : dIn.nan_flag,
          zi          : ziflag0,
-         quire       : unpack(quire),                        
+         quire       : unpack(s_if),                        
          frac_msb    : frac_msb0,
          frac_zero   : frac_zero0
       };
@@ -107,7 +106,7 @@ module mkDivider #(Bit #(2) verbosity) (
       if (verbosity > 1) begin
          $display ("%0d: %m: stage_1: ", cur_cycle);
          $display ("int_frac0 %b carry0 %h",int_frac0,carry0);
-         $display ("quire %b",quire);
+         $display ("quire %b",s_if);
       end
    endrule
 

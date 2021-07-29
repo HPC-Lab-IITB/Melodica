@@ -26,6 +26,7 @@ package Fused_Commons;
 // Common functions and definitions used by fused operators
 // --------------------------------------------------------------
 
+import DefaultValue :: *;
 import BUtils :: *;
 import Posit_User_Types :: *;
 import Posit_Numeric_Types :: *;
@@ -60,7 +61,7 @@ endinstance
 	
 // Input for the accumulate operation in the quire
 typedef struct {
-   Int #(QuireWidth) quire;
+   Int #(SIntFracWidthQ) quire;
    Quire_Meta        meta;
    Bit #(1)          frac_msb;
    Bit #(1)          frac_zero;
@@ -79,10 +80,10 @@ typedef struct {
 
 // Get the carry-Int-Frac value from the scale and frac values
 function Tuple4 #(
-     Bit #(QuireWidthMinus1)
+     Bit #(IntFracWidthQ)
    , Bit #(LogQuireWidth)
    , Bit #(1)
-   , Bit #(1)) calc_frac_int_alt (Bit #(FracWidthPlus1Mul2) f
+   , Bit #(1)) fn_calc_frac_int_mul (  Bit #(FracWidthPlus1Mul2) f
                               , Int #(ScaleWidthPlus2) s
                               , Bit#(1) truncated_frac_msb_in
                               , Bit#(1) truncated_frac_zero_in
@@ -93,7 +94,7 @@ function Tuple4 #(
    // into the frac part of the quire.
    // Proviso: sizeOf(FracWidthQ) > sizeOf (FracWidthPlus1Mul2)
    Bit #(FracWidthQ) q_f = zExtendLSB(f);
-   Bit #(IntWidthQPlusFracWidthQ) q_if = extend (q_f);
+   Bit #(IntFracWidthQ) q_if = extend (q_f);
 
    // The << converts the q_if into i.ffffff form from .iiffffff. The radix point
    // being the separator between i and f in q_if. However, the actual input was
@@ -111,30 +112,30 @@ function Tuple4 #(
 
    // Positive scale. Shift radix point to the right or q_if to the left
    if (s >= 0) begin // strictly > is sufficient, but >= infers simpler logic
-      Bit #(IntWidthQPlusFracWidthQ) shftamt = extend (pack (s));
+      Bit #(IntFracWidthQ) shftamt = extend (pack (s));
       q_if = q_if << shftamt;
       leading_one = leading_one - extend (pack (s));
    end 
 
    else begin
       s = abs(s);
-      Bit #(IntWidthQPlusFracWidthQ) shftamt = extend (pack (s));
+      Bit #(IntFracWidthQ) shftamt = extend (pack (s));
       q_if = q_if >> shftamt;
       leading_one = leading_one + extend (pack (s));
    end
 
    // Include the carry, which is all zeros
-   Bit #(QuireWidthMinus1) q_cif = zeroExtend (q_if);
+   // Bit #(QuireWidthMinus1) q_cif = zeroExtend (q_if);
    Bit #(1) truncated_frac_msb = truncated_frac_msb_in;
    Bit #(1) truncated_frac_zero = ~truncated_frac_msb_in & truncated_frac_zero_in;
 
-   return tuple4(q_cif, leading_one, truncated_frac_msb, truncated_frac_zero);
+   return tuple4(q_if, leading_one, truncated_frac_msb, truncated_frac_zero);
  endfunction
 
 
 // Get the carry-Int-Frac value from the scale and frac values
 function Tuple4 #(
-     Bit #(IntWidthQPlusFracWidthQ)
+     Bit #(IntFracWidthQ)
    , Bit #(CarryWidthQ)
    , Bit #(1)
    , Bit #(1)) calc_frac_int (  Bit #(t) f
@@ -143,10 +144,10 @@ function Tuple4 #(
                               , Bit#(1) truncated_frac_zero_in
                              ) provisos (  Add #(a__, t, TAdd #(FracWidthQ,2))
                                          , Add #(b__, CarryWidthQ, t)
-                                         , Add #(c__, t, IntWidthQPlusFracWidthQ)
+                                         , Add #(c__, t, IntFracWidthQ)
                                         );
    let frac_width = valueOf (t) - 2;
-   Bit #(IntWidthQPlusFracWidthQ) f_new = extend(f);
+   Bit #(IntFracWidthQ) f_new = extend(f);
 
    // First two bits of fraction are integer bits. If scale = 0 we have to shift
    // fract left by FWQ-(FW*2 or (no_of_frac_bits_input - 2))
@@ -164,7 +165,7 @@ function Tuple4 #(
    if(msb(s) == 1'b1 && scale_neg>0) begin
       f_new = f_new>>scale_neg;// if frac_shift < -(FWQ-(FW*2 or (no_of_frac_bits_input - 2))) the scale will be shifted right and we will lose frac bits since the maximum available shift = FWQ-(FW*2 or (no_of_frac_bits_input - 2))
       truncated_frac_msb = scale_neg>0 ? f[scale_neg-1] : 1'b0;//in the truncated bits see the msb
-      Bit#(IntWidthQPlusFracWidthQ) mask1 = ~('1>>scale_neg-1);
+      Bit#(IntFracWidthQ) mask1 = ~('1>>scale_neg-1);
       truncated_frac_zero = scale_neg>1 ? ((extend(f) & mask1) == 0 ? 1'b1 : 1'b0) :1'b1;////in the truncated bits see the leftover bits other than msb
    end else begin
       f_new = f_new<<scale_pos;// right shift to accomodate the scale
@@ -220,5 +221,4 @@ function Tuple4 #(
       $display ("      frac: %0h", qfrac);
       endaction
    endfunction
-
 endpackage
