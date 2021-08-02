@@ -117,7 +117,8 @@ module mkMultiplier #(Bit #(2) verbosity) (
       };
 
       let quire_in = Quire_Acc {
-           quire       : unpack (s_if)
+           sign        : dIn.sign
+         , qif         : qif
          , meta        : meta
          , frac_msb    : truncated_frac_msb
          , frac_zero   : truncated_frac_zero

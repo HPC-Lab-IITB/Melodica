@@ -61,7 +61,9 @@ endinstance
 	
 // Input for the accumulate operation in the quire
 typedef struct {
-   Int #(SIntFracWidthQ) quire;
+   Bit #(1)          sign;
+   Bit #(IntFracWidthQ) qif;
+   // Int #(SIntFracWidthQ) quire;
    Quire_Meta        meta;
    Bit #(1)          frac_msb;
    Bit #(1)          frac_zero;
