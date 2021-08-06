@@ -65,7 +65,7 @@ module mkTestbench (LED_IFC);
 module mkTestbench (Empty);
 `endif
 
-Bit #(2) verbosity = 0;
+Bit #(2) verbosity = 3;
 
 `ifdef RANDOM
 LFSR  #(Bit #(32))               lfsr1          <- mkLFSR_32;
@@ -144,7 +144,7 @@ endrule
 
 rule rl_tst_init ((rg_tb_state == TST) && (rg_comp_state == INIT));
    let ext_out <- extracter.response.get();
-   quire.init.put (ext_out);
+   quire.init (ext_out);
    rg_comp_state <= READREQ;
    if (verbosity > 0) begin
       $display ("%0d: %m.rl_tst_init: Test %d ", cur_cycle, rg_ip_num);

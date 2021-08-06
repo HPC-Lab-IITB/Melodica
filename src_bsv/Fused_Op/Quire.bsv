@@ -81,28 +81,20 @@ endfunction
 // function Tuple4 #(Bit #(LogQuireWidth)
 //                 , Bool
 //                 , Bool
-function Tuple2 #(Bit #(LogQuireWidth)
-                , Bit#(IntFracWidthQ)) fv_calc_frac_int (
-     Bit #(FracWidth) f
-   , Int #(ScaleWidthPlus1) s
-);
+function Bit#(IntFracWidthQ) fv_calc_frac_int (Bit #(FracWidth) f
+                                             , Int #(ScaleWidthPlus1) s);
+
    Bit #(IntFracWidthQ) f_new = extend(f);
    Bit #(FracWidthQ) qf = zExtendLSB (f); 
    Bit #(IntWidthQ) qi = 1;
 
    // Compose the fixed-point quire
-   Bit #(LogQuireWidth) msbzeros = 0;
-   // This is the number of zeros in cif before the leading one. For the scale = 0
-   // case, it is carry-width + int-width - 1 (for the 1.xxxxx case)
-   Bit #(LogQuireWidth) leading_one = fromInteger (
-      quire_carry_width + quire_int_width - 1);
 
    // Positive scale. Shift radix point to the right or {qi, qf} to the left
    Bit #(IntFracWidthQ) qif = {qi, qf};
    if (s >= 0) begin // strictly > is sufficient, but >= infers simpler logic
       Bit #(IntFracWidthQ) shftamt = extend (pack (s));
       qif = qif << shftamt;
-      leading_one = leading_one - extend (pack (s));
    end
 
    // Negative scale. Shift radix point to the left or {qi, qf} to the right
@@ -110,10 +102,9 @@ function Tuple2 #(Bit #(LogQuireWidth)
       s = abs(s);
       Bit #(IntFracWidthQ) shftamt = extend (pack (s));
       qif = qif >> shftamt;
-      leading_one = leading_one + extend (pack (s));
    end
 
-   return tuple2 (leading_one, qif);
+   return qif;
 endfunction
 
 // Checks if the scale value has exceeded the limits max and min set due to the
@@ -253,7 +244,7 @@ function Bit #(QuireWidthMinus1) fn_twosC_quire (
    , Vector #(N_Segs, Bit#(1)) quire_seg_zero
 );
    let sign = msb (quire [valueOf (N_Segs) - 1]);
-   let v_quire = quire;
+   Vector #(N_Segs, Segment) v_quire = quire;
 
    // Once the quire is inverted the all zero segs become all ones
    Bit #(N_Segs) one_segs = pack (quire_seg_zero);
@@ -264,7 +255,7 @@ function Bit #(QuireWidthMinus1) fn_twosC_quire (
 
    for (Integer i=0; i<valueOf(N_Segs); i=i+1) begin
       // Carry has effected this segment
-      if (v_one_segs_carry_prop[i] != v_one_segs[i]) begin
+      if (v_one_segs_carry_prop[i] != quire_seg_zero[i]) begin
          // Cases:
          // The segment was all zeros, got inverted to all ones, then a carry
          // propagated through it, turning it back into all zeros. 
@@ -288,10 +279,10 @@ endfunction
 (* synthesize *)
 module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
    Vector #(N_Segs, Reg #(Segment)) vrg_quire         <- replicateM (mkReg(0));
-   Vector #(N_Segs, Reg #(Bit#(1))) vrg_quire_seg_zero<- replicateM (mkReg (0));
-   FIFO #(Bit #(LogQuireWidth))     ff_num_msb_zeros  <- mkFIFO1;
-   Reg #(Quire_Meta)                rg_quire_meta     <- mkReg (defaultValue);
-   Reg #(Bool)                      rg_read_busy      <- mkReg (False);
+   Vector #(N_Segs, Reg #(Bit#(1))) vrg_quire_seg_zero<- replicateM (mkReg(1));
+   Reg    #(Bool)                   rg_seg_zero_upd   <- mkReg (True);
+   FIFO   #(Bit #(LogQuireWidth))   ff_num_msb_zeros  <- mkFIFO1;
+   Reg    #(Bool)                   rg_read_busy      <- mkReg (False);
 
    // Pipelined long adder
    AdderIFC                         seg_adder         <- mkSegAdder (vrg_quire, vrg_quire_seg_zero);
@@ -302,7 +293,8 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
 
    Int#(ScaleWidthPlus1) maxB, minB;
 
-   Bool quire_is_zero = unpack (reduceOr (pack (readVReg (vrg_quire_seg_zero))));
+   Bool quire_is_zero = (rg_seg_zero_upd
+                      && unpack (reduceOr(pack(readVReg(vrg_quire_seg_zero)))));
 
    // max scale value is defined here... have to saturate the scale value 
    // max value = (N-2)*(2^es) 
@@ -316,6 +308,12 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
    // Behavior
    // --------
    //
+   // Check if a segment is zero.
+   function Bit #(1) fn_seg_is_zero (Segment x);
+      return (pack (x == 0));
+   endfunction
+
+   // Absolute value of the quire
    function Tuple2 #(Bit #(1), Bit #(QuireWidthMinus1)) fn_abs_quire;
       Quire quire = pack (readVReg (vrg_quire));
       Bit #(QuireWidthMinus1) s_cif = quire [valueOf(QuireWidthMinus2):0];
@@ -325,6 +323,17 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
                                                    : twos_complement (s_cif);
       return (tuple2 (sign, cif));
    endfunction
+
+   // Update the zero segment indicator for the quire. Only runs when quiescent.
+   rule rl_upd_zero_seg (   (!rg_seg_zero_upd)
+                         && (!seg_adder.busy)
+                         && (!rg_read_busy)
+                        );
+      let v_quire = readVReg (vrg_quire);
+      Vector #(N_Segs, Bit#(1)) v_quire_seg_zero = map (fn_seg_is_zero, v_quire);
+      writeVReg (vrg_quire_seg_zero, v_quire_seg_zero);
+      rg_seg_zero_upd <= True;
+   endrule
 
    // Complete the steps to generate a read response to a quire read request
    rule rl_read_response ((rg_read_busy) && (!seg_adder.busy));
@@ -399,16 +408,12 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
       end
    endrule
 
-   // Check if a segment is zero.
-   function Bit #(1) fn_seg_is_zero (Segment x);
-      return (pack (x == 0));
-   endfunction
-
    // --------
    // Interfaces
    // --------
    method Action accumulate (Quire_Acc q) if (!rg_read_busy);
       // initiate the accumulation of the input into the quire
+      let input_is_zero = (q.meta.zi == ZERO);
 
       // Create the quire value by appending the zero carry and take a 2's
       // complement of the whole quire
@@ -420,13 +425,45 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
       // Create the input quire by selectively taking twos complement of the cif
       // depending on the value of sign
       Quire quire_in = abs_quire_in;
-      if (q.sign == 1'b1) quire_in = unpack (
-         {1'b1, fn_twosC_quire (v_quire, v_quire_seg_zero)});
-      seg_adder.acc (quire_in);
+      if (q.sign == 1'b1) quire_in = {
+         1'b1, fn_twosC_quire (v_quire, v_quire_seg_zero)};
+
+      // --------
+      // Special Cases
+
+      // a: the quire is zero and the segmented adder is quiescent
+      // No need for addition, the input quire becomes the quire value
+      
+      // b: the input is zero, no need for additon, this input can be skipped.
+
+      if (!input_is_zero) begin
+         if (!seg_adder.busy) begin
+            if (quire_is_zero) begin
+               // Special Case (a)
+               Vector #(N_Segs, Segment) v_quire_in = unpack (quire_in);
+               writeVReg (vrg_quire, v_quire_in);
+               writeVReg (vrg_quire_seg_zero, v_quire_seg_zero);
+               rg_seg_zero_upd <= True;
+            end
+
+            // The quire is not zero. Send the new input for accumulation
+            else begin
+               seg_adder.acc (quire_in);
+               rg_seg_zero_upd <= False;
+            end
+         end
+
+         // The adder is computing so it is not possible to determine the state of
+         // the quire at this point. Send the input for accumulation
+         else begin
+            seg_adder.acc (quire_in);
+            rg_seg_zero_upd <= False;
+         end
+      end
    endmethod
 
    method Action init (Posit_Extract p) if ((!seg_adder.busy) && (!rg_read_busy));
-      match {.lead_one, .qif} = fv_calc_frac_int (p.frac, p.scale);
+      let qif = fv_calc_frac_int (p.frac, p.scale);
 
       // Create the quire value by appending the zero carry and take a 2's
       // complement of the whole quire
@@ -436,31 +473,35 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
       // zero segs in this absolute value for the fast 2's Complement
       Quire abs_quire_in = {1'b0, carry, qif};
       Vector #(N_Segs, Segment) v_quire = unpack (abs_quire_in);
+
       Vector #(N_Segs, Bit#(1)) v_quire_seg_zero = map (fn_seg_is_zero, v_quire);
+      // If zero, overwrite the known pattern into the seg_zero vector
+      if (p.ziflag == ZERO) v_quire_seg_zero = replicate (1'b1);
 
       Vector #(N_Segs, Segment) v_s_cif = v_quire;
       if (p.sign == 1'b1) v_s_cif = unpack ({1'b1, fn_twosC_quire (
          v_quire, v_quire_seg_zero)});
 
       writeVReg (vrg_quire, v_s_cif);
-
-      // Fill in the meta details to qualify the quire bits
-      let qm = Quire_Meta {
-           nan : (p.ziflag == INF)
-         , zi  : p.ziflag
-         , lead_one : lead_one
-      };
-
-      rg_quire_meta <= qm;
+      writeVReg (vrg_quire_seg_zero, v_quire_seg_zero);
+      rg_seg_zero_upd <= True;
 
       if (verbosity > 1) begin
          $display ("%0d: %m: init: ", cur_cycle);
+         if (verbosity > 2) begin
+            $display ("    qif: 0x%0h", qif);
+            $display ("    v_quire_seg_zero: ", fshow (v_quire_seg_zero));
+            $display ("    v_quire: ", fshow (v_s_cif));
+         end
       end
    endmethod
 
    // Read the quire value. Will only run after all preceeding operations have
    // completed.
-   method Action read_req if ((!seg_adder.busy) && (!rg_read_busy));
+   method Action read_req if (   (!seg_adder.busy)
+                              && (!rg_read_busy)
+                              && (rg_seg_zero_upd));
+
       // Special cases -- zero quire
       if (quire_is_zero) begin
          // initialize prenorm_posit with value for a zero (or NaR) quire

@@ -140,6 +140,9 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
    FIFO #(Posit_Req)                   ffI            <- mkFIFO;
    FIFO #(Fpu_Rsp)                     ffO            <- mkFIFO1;
 
+   // Operations that update quire that are in flight through the posit core
+   Reg #(Bit #(8))                     rg_inflight    <- mkReg(0);
+
 
    let no_excep = FloatingPoint::Exception {
         invalid_op   : False
@@ -169,6 +172,15 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
       cmd_stg2_f.enq (cmd);
       ffI.deq;
 
+      // If the cmd leads to a quire update, increment the inflight counter
+      if (   (cmd == FMA_P)
+          || (cmd == FMS_P)
+`ifdef INCLUDE_PDIV
+          || (cmd == FDA_P)
+          || (cmd == FDS_P)
+`endif
+          || (cmd == FCVT_R_P)) rg_inflight <= rg_inflight + 1;
+
       if (verbosity > 1)
          $display ("%0d: %m: rl_extract_stg1: ", cur_cycle, fshow (cmd));
    endrule
@@ -187,8 +199,10 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
       end
    endrule
 `endif
-
-   rule rl_read_quire_stg1 (cmd == FCVT_P_R); 
+ 
+   // Initiate a read of the quire. Wait for all inflight operations to complete
+   // before doing so.
+   rule rl_read_quire_stg1 ((rg_inflight == 0) && (cmd == FCVT_P_R));
       quire.read_req;
       cmd_stg2_f.enq (cmd);
       ffI.deq;
@@ -233,11 +247,6 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
       let ext_out2 <- extracter2.response.get();
       divider.request.put (tuple2 (ext_out1, ext_out2));
       cmd_stg3_f.enq (cmd_stg2); cmd_stg2_f.deq;
-
-      // This operation is marked complete before dispatching to PositCore.
-      // Complete this operation as far as the CPU is concerned
-      // FloatU posit_out = tagged P 0;
-      // ffO.enq(tuple2(posit_out, no_excep));
 
       if (verbosity > 1) begin
          $display ("%0d: %m.rl_fda_stg2: divide ", cur_cycle);
@@ -284,10 +293,10 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
       quire.init (ext_out1);
       cmd_stg2_f.deq;
 
-      // This operation is marked complete before dispatching to PositCore.
-      // Complete this operation as far as the CPU is concerned
-      // FloatU posit_out = tagged P 0;
-      // ffO.enq(tuple2(posit_out, no_excep));
+      // As far as this operation is concerned, it is no longer inflight as the
+      // quire has internal flow control to stop reads when it is
+      // accumulating/initializing
+      rg_inflight <= rg_inflight - 1;
 
       if (verbosity > 1) begin
          $display ("%0d: %m.rl_init_quire_stg2: initialize ", cur_cycle);
@@ -319,6 +328,11 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
       quire.accumulate (quire_increment);
       cmd_stg3_f.deq;
 
+      // As far as this operation is concerned, it is no longer inflight as the
+      // quire has internal flow control to stop reads when it is
+      // accumulating/initializing
+      rg_inflight <= rg_inflight - 1;
+
       if (verbosity > 1) begin
          $display ("%0d: %m.rl_fma_stg3: accumulate ", cur_cycle);
          if (verbosity > 2)
@@ -332,6 +346,11 @@ module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
       let quire_increment <- divider.response.get ();
       quire.accumulate (quire_increment);
       cmd_stg3_f.deq;
+
+      // As far as this operation is concerned, it is no longer inflight as the
+      // quire has internal flow control to stop reads when it is
+      // accumulating/initializing
+      rg_inflight <= rg_inflight - 1;
 
       if (verbosity > 1) begin
          $display ("%0d: %m.rl_fda_stg3: accumulate ", cur_cycle);

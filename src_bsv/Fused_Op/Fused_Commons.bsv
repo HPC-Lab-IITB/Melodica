@@ -44,18 +44,15 @@ typedef struct {Bit#(1) sign1;
 //Input_posit is the data received from user
 //Input_posit consists of zero flag, infinity flag, sign of posit, scale , fraction for 2 inputs
 
-// Meta information about Quire
 typedef struct {
    Bool        nan;
    PositType   zi;
-   Bit #(LogQuireWidth) lead_one;
 } Quire_Meta deriving (Bits, FShow);
 
 instance DefaultValue #(Quire_Meta);
    defaultValue = Quire_Meta {
       nan   : False,
-      zi    : ZERO,
-      lead_one : 0
+      zi    : ZERO
    };
 endinstance
 	

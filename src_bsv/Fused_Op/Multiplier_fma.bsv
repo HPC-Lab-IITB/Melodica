@@ -113,7 +113,6 @@ module mkMultiplier #(Bit #(2) verbosity) (
       let meta = Quire_Meta {
            nan         : dIn.nan
          , zi          : dIn.zi
-         , lead_one    : lead_one
       };
 
       let quire_in = Quire_Acc {

@@ -101,7 +101,7 @@ module mkExtracter #(Bit #(2) verbosity) (Server #(Posit, Posit_Extract));
          let zi = fv_special_case(p);
 
          // sign bit is 0 when posit is positive else 1 when posit is negative
-         let sign = p [n_int-1];
+         let sign = msb (p);
 
          // new input stage0 is got after removing the sign bit and finding its two's complement if posit is negative from input posit
          Bit#(PositWidthMinus1) new_inp1 = truncate(p);
