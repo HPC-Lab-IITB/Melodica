@@ -86,6 +86,7 @@ Reg   #(COMP_State)              rg_comp_state  <- mkReg (EXT);
 Reg   #(Bit #(PositWidth))       rg_ip_num      <- mkReg (0);
 Reg   #(Bool)                    rg_error       <- mkReg (False);
 
+Posit posit_NaR = 1 << (valueOf (PositWidth)-1);
 
 function Action fa_report_test_pass;
    action
@@ -205,7 +206,9 @@ rule rl_tst_norm ((rg_tb_state == TST) && (rg_comp_state == NORM));
       rg_tb_state <= STOP;
    end
    else begin
-      if (posit_in != norm_out.posit) fa_report_test_fail (rg_ip_num - 1);
+      // Ignore checks for NaR
+      if ((posit_in != norm_out.posit) && (posit_in != posit_NaR))
+         fa_report_test_fail (rg_ip_num - 1);
    end
 
 endrule
