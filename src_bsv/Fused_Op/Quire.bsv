@@ -151,9 +151,14 @@ module mkSegZeroCounter #(
       let zerosInNonZeroSeg = countZerosMSB (rg_firstNonZeroSeg);
       Bit #(LogQuireWidth) numZeroSegs = extend (rg_numZeroSegs);
 
-      // Num-Zeros = (Num-Zero-Segs * 32) + (Num-Zero-Selected-Seg)
+      // Num-Zeros = (Num-Zero-Segs * 32) + (Num-Zero-Selected-Seg) - 1
       let numZeros = numZeroSegs << 5;
       numZeros = numZeros + extend (pack (zerosInNonZeroSeg));
+      // To discard the extra zero counted inserted while packing cif into
+      // QuireWidth (only applicable for QuireWidths which are multiples of
+      // 32-bits).
+      numZeros = numZeros - 1;
+
       ff_numZeros.enq (numZeros);
       rg_seg_counter_busy <= False;
    endrule
@@ -294,7 +299,7 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
    Int#(ScaleWidthPlus1) maxB, minB;
 
    Bool quire_is_zero = (rg_seg_zero_upd
-                      && unpack (reduceOr(pack(readVReg(vrg_quire_seg_zero)))));
+                      && unpack (reduceAnd(pack(readVReg(vrg_quire_seg_zero)))));
 
    // max scale value is defined here... have to saturate the scale value 
    // max value = (N-2)*(2^es) 
@@ -336,8 +341,14 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
    endrule
 
    // Complete the steps to generate a read response to a quire read request
-   rule rl_read_response ((rg_read_busy) && (!seg_adder.busy));
+   rule rl_read_response (   (rg_read_busy)
+                          && (rg_seg_zero_upd)
+                          && (!seg_adder.busy)
+                         );
+      if (verbosity > 1) $display ("%0d: %m.rl_read_response", cur_cycle);
+
       let msbZeros = ff_num_msb_zeros.first; ff_num_msb_zeros.deq;
+
 
       let sign = msb (pack (readVReg (vrg_quire)));
       let cif = pack (readVReg (vrg_quire))[valueOf(QuireWidthMinus2):0];
@@ -353,9 +364,17 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
       // saturate scale beyond maxB, minB
       match {.bounded, .scale} = fn_bound_scale (quire_scale, maxB, minB);
 
+      if (verbosity > 2) begin
+         $display ("    msbZeros: %0d", msbZeros);
+         $display ("    quire_scale: %0d", quire_scale);
+         $display ("    quire_scale: %0d", quire_scale);
+         $display ("    bounded ", fshow (bounded), " scale: %0d", scale);
+         $display ("    max: %0d, min: %0d", maxB, minB);
+      end
+
       // Shift and create the fraction based on the scale value taking care of
-      // overflows and underflows. The fraction bits are aligned starting from the
-      // msb of cif. The hidden bit is discarded.
+      // overflows and underflows. The fraction bits are aligned starting from
+      // the msb of cif. The hidden bit is discarded.
 
       Bit#(FracWidth) frac;
       Bit#(1) frac_round_msb;
@@ -390,7 +409,7 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
 
       let prenorm_posit = Prenorm_Posit {
            sign      : sign
-         , nan       : False  // look at known problems
+         , nan       : !bounded
          , zi        : REGULAR
          , scale     : pack (scale)
          , frac      : frac
@@ -400,12 +419,7 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
 
       posit_rsp_f.enq (prenorm_posit);
       rg_read_busy <= False;
-      if (verbosity > 1) begin
-         $display ("%0d: %m.rl_read_response", cur_cycle);
-         if (verbosity > 2) begin
-            fa_print_quire (pack (readVReg (vrg_quire)));
-         end
-      end
+      if (verbosity > 2) fa_print_quire (pack (readVReg (vrg_quire)));
    endrule
 
    // --------
@@ -462,7 +476,8 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
       end
    endmethod
 
-   method Action init (Posit_Extract p) if ((!seg_adder.busy) && (!rg_read_busy));
+   method Action init (Posit_Extract p) if (   (!seg_adder.busy)
+                                            && (!rg_read_busy));
       let qif = fv_calc_frac_int (p.frac, p.scale);
 
       // Create the quire value by appending the zero carry and take a 2's
@@ -491,7 +506,7 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
          if (verbosity > 2) begin
             $display ("    qif: 0x%0h", qif);
             $display ("    v_quire_seg_zero: ", fshow (v_quire_seg_zero));
-            $display ("    v_quire: ", fshow (v_s_cif));
+            fa_print_quire (pack (v_s_cif));
          end
       end
    endmethod
@@ -501,6 +516,9 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
    method Action read_req if (   (!seg_adder.busy)
                               && (!rg_read_busy)
                               && (rg_seg_zero_upd));
+
+      if (verbosity > 1)
+         $display ("%0d: %m: read_req: ", cur_cycle);
 
       // Special cases -- zero quire
       if (quire_is_zero) begin
@@ -515,6 +533,7 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
             , frac_zero : 1'b1
          };
          posit_rsp_f.enq (prenorm_posit);
+         if (verbosity > 2) $display ("    Zero Quire");
       end
 
       // REGULAR quire
@@ -528,7 +547,10 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
          // Count leading zeros on the absolute value of the quire value
          zero_counter.count (pack ({1'b0, cif}));
          rg_read_busy <= True;
+
+         if (verbosity > 2) $display ("    cif: 0x%0h", cif);
       end
+
    endmethod
 
    interface Get read_rsp = toGet (posit_rsp_f);
