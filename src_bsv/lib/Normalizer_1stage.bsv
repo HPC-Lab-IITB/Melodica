@@ -1,0 +1,314 @@
+// Copyright (c) HPC Lab, Department of Electrical Engineering, IIT Bombay
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
+package Normalizer;
+
+// --------------------------------------------------------------
+// This package defines:
+//
+//    mkNormalizer: 1 stage normalizer which composes the
+//    different posit fields into a posit word
+// --------------------------------------------------------------
+
+// Library imports
+import FIFO         :: *;
+import GetPut       :: *;
+import ClientServer :: *;
+
+// Project imports
+import Posit_Numeric_Types :: *;
+import Posit_User_Types :: *;
+
+// Prenorm_Posit is the input to the normalizer as received from a compute
+// pipeline. Value consists of:
+//    sign of posit
+//    zero and infinity flag
+//    NaN flag,
+//    scale bits
+//    fraction bits that were truncated due to size reduction from quire
+//    truncated_frac_msb is the MSB of the truncated bits and
+//    truncated_frac_zero is 1 if all the other bits (other than msb) of the
+//    trucated fraction are zero
+
+typedef struct {
+   Bit #(1)                sign;
+   PositType               zi;
+   Bool                    nan;
+   Bit #(ScaleWidthPlus1)  scale;
+   Bit #(FracWidth)        frac;
+   Bit #(1)                frac_msb;
+   Bit #(1)                frac_zero;
+} Prenorm_Posit deriving(Bits,FShow);
+
+// Norm_Posit is the output of the normalizer
+typedef struct {
+   Bit #(PositWidth) posit;
+   PositType         zi;
+   Bool              nan;
+   Bool              rounding;
+} Norm_Posit deriving(Bits,FShow);
+
+(* synthesize *)
+module mkNormalizer #(Bit #(2) verbosity) (Server #(Prenorm_Posit, Norm_Posit));
+
+   // make a FIFO to store data at the end of each stage of the pipeline, and also for input and outputs
+   FIFO #(Norm_Posit) fifo_output_reg <- mkFIFO;
+
+   // Posit# (N, ES)
+   Integer es_int = valueOf(ExpWidth);
+   Integer n_int = valueOf(PositWidth);
+   Integer n_1_int = valueOf(PositWidthMinus1);
+   UInt#(BitsPerPositWidth) n_2_int = fromInteger(n_int-2);
+
+   // this function is used to construct the regime field
+   // depending on the value you add those many number of zeros
+   // or one with a bit flip at the end
+   function Tuple2 #(
+        Bit #(PositWidthMinus1)
+      , UInt#(BitsPerPositWidth)) fv_calculate_regime (Bit #(ScaleWidthMinusExpWidthPlus1) a);
+
+      Bit #(PositWidthMinus1) one = extend(1'b1);//000000000...001
+      Bit #(PositWidthMinus1) k;
+      UInt#(BitsPerPositWidth) n1;
+
+      // first bit is 1 means the number is negative so the value has to negated
+      // and will be denoted by leading number of zeros            
+      if (a [valueOf(ScaleWidthMinusExpWidth)] == 1'b1) begin
+         n1 = truncate (unpack (twos_complement(a)));
+         k = one<<(n_2_int-n1);//0000..010...0
+      end
+
+      // first bit is 0 that means the value denotes the leading number of ones        
+      else begin
+         n1 = boundedPlus(truncate(unpack(a)),1);
+         k = (~('1>>n1));//111...11000..00
+      end
+      return tuple2(k,n1);
+   endfunction
+
+   // this function is used to give output for special case i.e.
+   // give all zeros for zero_infinity flag = 10(zero) and give
+   // first bit 1 and others zeros for zero_infinity flag =
+   // 01(infinity) 
+   function Bit#(PositWidth) fv_outp_z_i(PositType z_i);
+   Bit#(PositWidth) one = extend(1'b1);
+   if(z_i == INF)
+       return one<<n_1_int;
+   else return '0;
+   endfunction
+
+   // This function is used to give final output by taking twos
+   // complement of the whole number if the sign bit is 1 
+   function Bit#(PositWidth) fv_outp_sign(Bit#(PositWidthMinus1) a, Bit#(1) s);
+   if(s == 1)
+       return {1'b1,twos_complement(a)};
+   else return {1'b0,a};
+   endfunction
+   
+   // This function determines the mask that will be used for the
+   // exponent depending on the number of bits available for
+   // exponent input: n_2_k: number of bits left for exponent and
+   // fraction, exponent value
+   // output: shift: the bits the exponent has to shift to be
+   // placed just after regime, shift_new :shift in fraction bits
+   // to accomodate any overflow of exponent , mask : to see whoch
+   // exponent bits are to be used
+   function Tuple3#(UInt#(BitsPerPositWidth),Bit#(ExpWidthPlus1), Bit#(ExpWidth)) fv_expo_window_mask (UInt#(BitsPerPositWidth) n_2_k,Bit#(ExpWidth) expo);
+       let es_bit = fromInteger(es_int);
+       Bit #(ExpWidthPlus1) one = extend(1'b1);
+       Bit #(ExpWidth) expo_new = expo;
+       UInt#(BitsPerPositWidth) shift;
+       Bit #(ExpWidthPlus1) shift_new;
+
+       // the number of bits available less than the maximum number of bits the exponent can use 
+       if (n_2_k < es_bit) begin
+          // dont shift the exponent, it will be placed at the last 
+          shift = 0;
+
+          // which bits of exponent are overlapping with regime field due to less
+          // number of bits available for exponent 
+          Bit #(ExpWidth) mask_e = '1>>(es_bit - n_2_k);
+
+          // the overlap bits are 0 i.e. dont hold any information
+          if ((expo & mask_e) == 0) begin
+             shift_new = 0;//n_2_k se shift expo
+             expo_new = expo >> n_2_k;// use all exponent bits
+          end
+
+          // use the complement of the value of exponent since we are increasing
+          // or decreasing the regime by 1 as required, as round off of exponent
+          // as can be seen in the mask  
+          else begin
+             shift_new = extend (twos_complement (expo));
+             expo_new = truncate(one<<n_2_k) & expo;//any of the overlap bits is 1 ????????????(es)>1???
+          end
+       end
+
+       else begin
+          shift = n_2_k-es_bit;//shift the es bits to place them just after the regime field
+          shift_new = 0;//no change in fraction bits
+          expo_new = expo;//use all exponent bits
+       end
+       return tuple3(shift,shift_new,expo_new);
+   endfunction
+
+   interface Put request;
+      method Action put (Prenorm_Posit p);
+         // interpreting scale value into regime and exponent   
+         match { .k, .no_of_bit_k } = fv_calculate_regime (p.scale [valueOf(ScaleWidth):es_int]);
+
+         // carrying exponent field forward (don't care if es = 0)
+         Bit#(ExpWidth) expo = (es_int == 0) ? 0 : p.scale[es_int-1:0];
+
+         // shift gives the number of bits have shifted so that the exponent bit
+         // can be directly added to the regime field
+
+         // shift the exponent field by 0 if the exponent field forms the last
+         // bits of the posit number
+
+         // shift_new = the number of bits the fraction has to be shifted so as to
+         // accomodate exponent bits the unavalibility of bits to store it in the
+         // input
+
+         // shift_new = the number of overlap bits between regime and exponent
+         // mask : see which exponent to be used
+         let n_2_k = (n_2_int-no_of_bit_k);
+         match{.shift0, .shift_new0, .expo_masked} = fv_expo_window_mask(n_2_k,expo);
+
+         // we bound the sum of k and expo to maximum if it exceeds
+         // k + shift expo depending on available bits
+         UInt#(PositWidthMinus1) uint_k_expo = boundedPlus(unpack(k) , unpack(extend(expo_masked)<<shift0));
+         Bit#(FracWidth) frac = truncate({(n_2_k == 0?1'b0:1'b1),p.frac}>>shift_new0);
+             //combining the regime and exponent field
+          Bit#(PositWidthMinus1) k_expo = pack(uint_k_expo);
+             // see the case where there is no available space to accomodate exponent and the there is no shift in fraction snce all frac bits will be lost
+          Bit#(1) flag_endcase = pack(n_2_k == 0 && shift_new0 == 0); 
+             //carrying forward msb of truncated fraction bits
+             //if there is no shift in fraction msb remains but if there is change we have to use the last bit of the frac bits lost
+             Bit#(1) truncated_frac_msb = shift_new0 == 0 ? p.frac_msb : p.frac [shift_new0-1];
+             //carrying forward truncated_frac_zero
+             //if there is no shift in truncated_frac_zero remains but if there is a shift we have to see the new rounded frac bits, old truncated_frac_msb and old truncated_frac_zero
+             Bit#(1) truncated_frac_zero = shift_new0 == 0 ? p.frac_zero :(shift_new0 == fromInteger(1) ?  p.frac_zero & (~p.frac_msb) : p.frac_zero & (~p.frac_msb) & ((unpack(p.frac[shift_new0-2:0]) ==  0)? 1'b1 : 1'b0));
+             `ifdef RANDOM_PRINT
+             $display("shift0 %b shift_new0 %b expo_new %b p.frac %b n_2_k %b expo %b truncated_frac_msb %b truncated_frac_zero %b ",shift0, shift_new0, expo_masked,p.frac,n_2_k,expo,truncated_frac_msb,truncated_frac_zero);
+             $display("k %b",k);
+             $display("no_of_bit_k %b",no_of_bit_k);
+             `endif
+
+         //shift_2 gives the shift in fraction bits
+         let shift_2 = fromInteger(valueOf(FracWidth))-shift0;
+         //expo_even tells if exponent field's lsb is 0/1; see this only if #frac bits = 0; in other cases it is 1
+         // see if we have even expo or odd expo
+         Bit#(1) expo_even = (shift0 == 0 ? ~(k_expo[0]) : 1'b1);
+         // in rounding a few bits will be lost so depending on the bits lost we round the number 
+         //flag_prev_truncate tells if the last bit lost is from truncated frac or the present frac
+         //require it to round the number to nearest value
+         Bit#(1) flag_prev_truncate = ((shift_2) == 0) ? truncated_frac_msb : (frac[shift_2-1]);
+
+         // flag_equidistant tells if it is equidistant from the
+         // posits that can be represented
+
+         // check if the fraction is equidistnat or not for rounding
+
+         // cases that need to be checked for to see if fraction
+         // bits that are being truncated is equidistant or not
+         // as then we have to go to the nearest even. 
+
+         // Rounding rules: frac bits lost in the last shifting are 
+         // a) more than 1 (shift_2>1): then the msb lost(flag_prev_truncate)
+         // should be 1, all other bits truncated due to the shifting should be 0s
+         // & other bits that need to be ensured to be 0 include
+         // truncated_frac_msb should be 0 & truncated_frac_zero should be 1 and
+         // finally only is the last fraction bit being used is 1 then only we
+         // have to add 1 and round it to even  
+
+         // b) is equal to 1(shift_2 ==1): then the msb lost(flag_prev_truncate)
+         // should be 1 & other bits that need to be ensured to be 0 include
+         // truncated_frac_msb that should be 0 & truncated_frac_zero that should
+         // be 1 and finally only is the last fraction bit being used is 1 then
+         // only we have to add 1 and round it to even 
+
+         // c) is equal to 0(shift_2 ==0): then the msb lost(flag_prev_truncate
+         // which is also equal to truncated_frac_msb) should be 1 & other bits
+         // that need to be ensured to be 0 include truncated_frac_zero that
+         // should be 1 and finally only is the last fraction bit being used is 1
+         // then only we have to add 1 and round it to even  
+
+         // d) all bits(shift0 == 0): then the msb lost(flag_prev_truncate which
+         // is also equal to truncated_frac_msb) should be 1 & other bits that
+         // need to be ensured to be 0 include truncated_frac_zero that should be
+         // 1 and finally since all fraction bits are lost then the last bit in
+         // the number will be exponent bit so we have to check if that is even or
+         // not and so decide the rounding bit 
+
+         // case2: flag_endcase states if all expo(other than when es = 0) and
+         // frac bits are being truncated we check if the flag_prev_truncate is 0  
+
+         // case3: when k_expo is all 1s and all frac bits are being truncated and
+         // frac and all other bits are 0 it will be equidistant even if expo bits
+         // is zero (other than when es = 0)
+
+         Bit#(1) flag_equidistant = 1'b0;
+         if(shift_2>= 0)
+            if(frac[shift_2] == 1'b0 && flag_prev_truncate == 1'b1 && truncated_frac_zero == 1'b1 && expo_even == 1'b1)
+               if(shift_2 == 0)
+                  flag_equidistant = 1'b1;
+               else if(shift_2 == 1 && truncated_frac_msb == 1'b0 )
+                  flag_equidistant = 1'b1;
+               else if(shift_2>=2 && unpack(frac[shift_2-2:0]) ==  0 && truncated_frac_msb == 1'b0)
+                  flag_equidistant = 1'b1;
+         else if(flag_endcase == 1'b1 && flag_prev_truncate == 1'b1 && (es_int != 0)) 
+            flag_equidistant = 1'b1;
+         else if(k_expo == '1 && shift0 == 0 && frac ==  0 && truncated_frac_zero == 1'b1 &&  truncated_frac_msb == 1'b0 && (es_int != 0))
+            flag_equidistant = 1'b1;
+         else
+            flag_equidistant = 1'b0;
+
+         //we bound the sum of k expo and frac to maximum if it exceeds
+         //k_expo + shifted fraction bits + if the prev truncated bit is 1/0 - if the number is equidistant
+         UInt#(PositWidthMinus1) uint_k_expo_frac = boundedPlus(unpack(k_expo +(extend(frac)>>(shift_2))-extend(flag_equidistant)),unpack(extend(flag_prev_truncate)));
+         uint_k_expo_frac = uint_k_expo_frac + extend(uint_k_expo_frac == 0 && flag_equidistant == 0 ?1'b1:1'b0);
+         
+         Bool rounding = (flag_prev_truncate - flag_equidistant == 1'b1 || uint_k_expo_frac == 0 && flag_equidistant == 0);
+         `ifdef RANDOM_PRINT
+         $display("p.sign %b",p.sign);
+         $display("k_expo %b frac %b uint_k_expo_frac %b flag_endcase %b",k_expo,frac,uint_k_expo_frac,flag_endcase);
+         $display(" shift0 %b shift_2 %b flag_prev_truncate %b flag_equidistant %b",shift0,shift_2,flag_prev_truncate,flag_equidistant);
+         $display(" p.zero_infinity_flag %b",p.zero_infinity_flag);
+         `endif
+         let output_regf = Norm_Posit {
+             //carrying nan flag forward
+             nan    : p.nan,
+             // depending on sign bit and zero_infinity_flag giving the final output
+             posit  : (p.zi == REGULAR) ? fv_outp_sign (pack (uint_k_expo_frac), p.sign)
+                                        : fv_outp_z_i (p.zi),
+             zi     : p.zi,
+             rounding : rounding
+          };
+         fifo_output_reg.enq(output_regf);
+         `ifdef RANDOM_PRINT
+         $display("output_norm %b",output_regf);
+         `endif
+      endmethod
+   endinterface
+   interface Get response = toGet (fifo_output_reg);
+endmodule
+
+endpackage: Normalizer

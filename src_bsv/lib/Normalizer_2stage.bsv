@@ -41,12 +41,16 @@ import Posit_User_Types    :: *;
 
 // --------
 // Local Types
-// Prenorm_Posit is the input to the normalizer as received from a compute pipeline
-// Value consists of sign of posit, zero and infinity flag, NaN flag, scale bits, fraction field
-// of the fraction bits that were truncated due to size reduction, truncated_frac_msb gives the
-// MSB of the truncated bits and truncated_frac_zero checks if all the other bits (other than
-// msb) of the trucated fraction are zero or not: if all bits are zero the truncated_frac_zero
-// is 1
+// Prenorm_Posit is the input to the normalizer as received from a compute
+// pipeline. Value consists of:
+//    sign of posit
+//    zero and infinity flag
+//    NaN flag,
+//    scale bits
+//    fraction bits that were truncated due to size reduction from quire
+//    truncated_frac_msb is the MSB of the truncated bits and
+//    truncated_frac_zero is 1 if all the other bits (other than msb) of the
+//    trucated fraction are zero
 
 typedef struct {
    Bit #(1)                sign;
