@@ -1,3 +1,5 @@
 Verilog_RTL
 VerilogCode
 build_dir
+exe_HW_sim*
+Posit_Numeric_Types.bsv
