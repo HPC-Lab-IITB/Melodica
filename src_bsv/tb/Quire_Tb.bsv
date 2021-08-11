@@ -38,6 +38,7 @@ import GetPut              :: *;
 import ClientServer        :: *;
 import FShow               :: *;
 import LFSR                :: *;
+import StmtFSM             :: *;
 
 import Utils               :: *;
 import Posit_Numeric_Types :: *;
@@ -45,6 +46,8 @@ import Posit_User_Types    :: *;
 import Quire               :: *;
 import Normalizer          :: *;
 import Extracter           :: *;
+import Fused_Commons       :: *;
+import Multiplier_fma      :: *;
 
 // Number of random tests to be run
 `ifdef P8
@@ -55,14 +58,154 @@ typedef 8192 Num_Tests;
 typedef 8192 Num_Tests;
 `endif
 
+
+// --------
+// A directed TB to test accumulation into the quire
+// --------
+(* synthesize *)
+module mkAccTb (Empty);
+   Bit #(2) verbosity = 3;
+
+   // Extracter for init operations
+   Server #(Posit, Posit_Extract)   extracterA     <- mkExtracter (verbosity);
+   Server #(Posit, Posit_Extract)   extracterB     <- mkExtracter (verbosity);
+
+   // Output normalizer
+   Server #(  Prenorm_Posit
+            , Norm_Posit)           normalizer     <- mkNormalizer (verbosity);
+
+   // Multiplier part of FMA/FMS
+   Server #(  Tuple2 #(  Posit_Extract
+                       , Posit_Extract)
+            , Quire_Acc)            multiplier     <- mkMultiplier (verbosity);
+
+   Quire_IFC                        quire          <- mkQuire (verbosity);
+
+
+   function Action fa_in_posits (Posit a, Posit b);
+      action
+         extracterA.request.put (a);
+         extracterB.request.put (b);
+      endaction
+   endfunction
+
+   function Action fa_ext_to_mul;
+      action
+         let ext_outA <- extracterA.response.get();
+         let ext_outB <- extracterB.response.get();
+         multiplier.request.put (tuple2 (ext_outA, ext_outB));
+      endaction
+   endfunction
+
+   function Action fa_mul_acc;
+      action
+         let mul_out <- multiplier.response.get ();
+         quire.accumulate (mul_out);
+      endaction
+   endfunction
+
+   function Action fa_quire_norm;
+      // Read Quire response. Normalize.
+      action
+         let o <- quire.read_rsp.get ();
+         normalizer.request.put (o);
+      endaction
+   endfunction
+
+   function Action fa_check_response (Posit expected);
+      action
+         // Normalize output. Check
+         let o <- normalizer.response.get ();
+         if (o.posit == expected)
+            $display ("Test PASS.");
+         else 
+            $display ("Test FAIL. (Expected 0x%0h) (Actual 0x%0h)", expected, o);
+      endaction
+   endfunction
+
+   mkAutoFSM (
+      seq
+         seq
+            // Test 1:
+            //         Quire = 0
+            //         A = 1.125
+            //         B = 2.0
+            //         Accumulate (A,B) (result: 2.25)
+            //         Read             (result: 0x5200). Check.
+            action
+               extracterA.request.put (0);
+            endaction
+            action
+               let ext_out <- extracterA.response.get();
+               quire.init (ext_out);               // Quire = 0
+               fa_in_posits (16'h4200, 16'h5000);
+            endaction
+
+            fa_ext_to_mul ();    // A * B
+            fa_mul_acc ();       // Q = Q + (A * B)
+            quire.read_req;      // Read Quire
+            fa_quire_norm;
+            fa_check_response (16'h5200);
+         endseq
+
+         seq
+            // Test 2:
+            //         A = 1.125
+            //         B = 2.0
+            //         Accumulate (A,B) (result: 4.50)
+            //         Read             (result: 0x6100). Check.
+            fa_in_posits (16'h4200, 16'h5000);
+            fa_ext_to_mul ();    // A * B
+            fa_mul_acc ();       // Q = Q + (A * B)
+            quire.read_req;      // Read Quire
+            fa_quire_norm ();
+            fa_check_response (16'h6100);
+         endseq
+
+         seq
+            // Test 3:
+            //         A = -1.125
+            //         B = 2.0
+            //         Accumulate (A,B) (result: 2.25)
+            //         Read             (result: 0x5200). Check.
+            fa_in_posits (16'hBE00, 16'h5000);
+            fa_ext_to_mul ();    // A * B
+            fa_mul_acc ();       // Q = Q + (A * B)
+            quire.read_req;      // Read Quire
+            fa_quire_norm ();
+            fa_check_response (16'h5200);
+         endseq
+
+         seq
+            // Test 3:
+            //         A = -1.125
+            //         B = 2.0
+            //         Accumulate (A,B) (result: 0.00)
+            //         Read             (result: 0x5200). Check.
+            fa_in_posits (16'hBE00, 16'h5000);
+            fa_ext_to_mul ();    // A * B
+            fa_mul_acc ();       // Q = Q + (A * B)
+            quire.read_req;      // Read Quire
+            fa_quire_norm ();
+            fa_check_response (16'h0000);
+         endseq
+      endseq
+   );
+
+endmodule
+
+
+// --------
+// Exhaustive testbench to initialize and read back the quire.
+// --------
 typedef enum {SEED, TST, STOP} TB_State deriving (Bits, Eq, FShow);
 typedef enum {EXT, INIT, READREQ, READRSP, NORM} COMP_State deriving (Bits, Eq, FShow);
 
 (* synthesize *)
 `ifdef FPGA
-module mkTestbench (LED_IFC);
+module mkInitReadTb (LED_IFC);
 `else
-module mkTestbench (Empty);
+module mkInitReadTb (Empty);
 `endif
 
 Bit #(2) verbosity = 3;

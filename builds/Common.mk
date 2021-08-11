@@ -12,8 +12,6 @@ BSC_COMPILATION_FLAGS += \
 		 -D P$(POSIT_SIZE)
 OBJ = .o
 
-TOPMOD = mkTestbench
-
 BLUESPEC_LIB = %/Prelude:%/Libraries
 
 CXXFAMILY=$(shell $(BLUESPECDIR)/bin/bsenv c++_family)
@@ -62,7 +60,7 @@ compile: build_dir Verilog_RTL
 	bsc -u -elab -verilog $(TMP_DIRS) $(BSC_COMPILATION_FLAGS) -p $(BSC_PATH) -g $(TOPMOD) $(TOPFILE)
 	@echo "INFO: Compile complete"
 
-SIM_EXE_FILE = exe_HW_sim
+SIM_EXE_FILE = exe_$(TOPMOD)_sim
 BSC_CFLAGS = \
 		-Xl -v \
 		-Xc -O3\

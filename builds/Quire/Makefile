@@ -13,7 +13,10 @@ STIMULUS ?= COUNTER
 # Mandatory command line arg -- select between SIM and FPGA
 PLATFORM ?= SIM
 
-# Mandatory command line arg -- The TB being built
+# Mandatory command line arg -- the top-level bsv file which contains the TB
 TOPFILE ?= $(DISTRO)/src_bsv/tb/Quire_Tb.bsv
+
+# Mandatory command line arg -- the TB being built
+TOPMOD ?= mkInitReadTb
 
 include $(DISTRO)/builds/Common.mk
