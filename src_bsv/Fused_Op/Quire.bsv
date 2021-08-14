@@ -196,7 +196,9 @@ module mkSegAdder #(
       , Vector #(N_Segs, Reg #(Bit#(1))) vrg_segIsZero
    ) (AdderIFC);
    Vector #(N_Segs, FIFO #(Segment)) vff_in <- replicateM (mkSizedFIFO (4));
+`ifndef PWIDTH_8
    Vector #(N_SegsSub1, FIFO#(Bit #(1))) vff_carry <- replicateM (mkSizedFIFO (4));
+`endif
    Reg #(Bit #(TLog #(N_Segs))) rg_inFlight <- mkReg(0);
 
    Bool accIsBusy = (rg_inFlight != 0);
@@ -205,7 +207,12 @@ module mkSegAdder #(
       SegmentWCarry acc = extend (vrg_accumulator[0]);
       SegmentWCarry in  = extend (vff_in[0].first); vff_in[0].deq;
       acc = acc + in;
+`ifdef PWIDTH_8
+      // 8-bit posits just have a single segment
+      rg_inFlight <= rg_inFlight - 1;
+`else
       vff_carry[0].enq (msb (acc));
+`endif
 
       Segment acc_seg = truncate (acc);
       vrg_accumulator[0] <= acc_seg;
@@ -251,6 +258,11 @@ function Bit #(QuireWidthMinus1) fn_twosC_quire (
    let sign = msb (quire [valueOf (N_Segs) - 1]);
    Vector #(N_Segs, Segment) v_quire = quire;
 
+`ifdef PWIDTH_8
+   for (Integer i=0; i<valueOf(N_Segs); i=i+1) begin
+      v_quire[i] = (~v_quire[i]) + 1;
+   end
+`else
    // Once the quire is inverted the all zero segs become all ones
    Bit #(N_Segs) one_segs = pack (quire_seg_zero);
 
@@ -273,6 +285,7 @@ function Bit #(QuireWidthMinus1) fn_twosC_quire (
       // Carry has no effect on this segment. So, just the inverted value
       else v_quire[i] = ~v_quire[i];
    end
+`endif
 
    Bit #(QuireWidthMinus1) cif = pack (v_quire)[valueOf(QuireWidthMinus2):0];
    return (cif);
