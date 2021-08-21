@@ -103,9 +103,6 @@ module mkMultiplier #(Bit #(2) verbosity) (
       // the value to be sent for accumulation has zero carry. So, it is
       // sufficient to convert qif to signed form. The zero carry can be added in
       // at the accumulator
-      Bit #(SIntFracWidthQ) s_if = {  dIn.sign
-                                    , (dIn.sign == 1'b0) ? qif
-                                                          : twos_complement (qif)};
 
       // consider adding trailing zeros, together they will fix the non-zero
       // bits in the qif. If we can do it right, the quire addition can be reduced
@@ -132,7 +129,10 @@ module mkMultiplier #(Bit #(2) verbosity) (
             $display ("   frac_zero : %0b", quire_in.frac_zero);
             $display ("   meta      : ", fshow (meta));
 
-            // Before printing quire add the carry (sign-extension)
+            // Before printing quire add the carry by sign-extending if
+            Bit #(SIntFracWidthQ) s_if = {
+               dIn.sign, (dIn.sign == 1'b0) ? qif
+                                            : twos_complement (qif)};
             Int #(QuireWidth) s_cif = signExtend (unpack (s_if));
             fa_print_quire (pack (s_cif));
          end
