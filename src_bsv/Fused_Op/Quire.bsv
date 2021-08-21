@@ -219,6 +219,7 @@ module mkSegAdder #(
       vrg_segIsZero[0] <= pack (acc_seg == 0);
    endrule
 
+`ifndef PWIDTH_8
    for (Integer i = 1; i < valueOf (N_Segs); i = i+1) begin
       rule acc_stage_i (accIsBusy);
          SegmentWCarry acc = extend (vrg_accumulator[i]);
@@ -237,6 +238,7 @@ module mkSegAdder #(
             vff_carry[i].enq (msb (acc));
       endrule
    end
+`endif
 
    method Action acc (Quire x);
       Vector #(N_Segs, Segment) v_x = unpack (x);

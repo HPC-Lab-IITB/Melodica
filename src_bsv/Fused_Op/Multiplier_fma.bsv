@@ -23,7 +23,7 @@ package Multiplier_fma;
 // --------------------------------------------------------------
 // This package defines:
 //
-// mkMultiplier: 2-stage posit multiplier
+// mkMultiplier: 2-stage pipelined posit multiplier
 // --------------------------------------------------------------
 
 import FIFOF               :: *;
@@ -139,6 +139,9 @@ module mkMultiplier #(Bit #(2) verbosity) (
       end
    endrule
 
+
+   // --------
+   // Interface
    interface Put request;
       method Action put (Tuple2 #(Posit_Extract, Posit_Extract) extracted_posits);
          match {.ep1, .ep2} = extracted_posits;

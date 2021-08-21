@@ -21,6 +21,7 @@ typedef enum {Div_START, Div_LOOP1, Div_LOOP2, Div_DONE} DivState
    deriving (Eq, Bits, FShow);
 
 
+(* synthesize *)
 module mkIntDivide #(Bit #(2) verbosity) (IntDivide_IFC);
 
    FIFO #(Tuple3 #(Bit #(Quotient), Bit #(1), Bit #(1))) ffo <- mkFIFO;

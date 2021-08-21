@@ -24,7 +24,7 @@ package Divider_fda;
 // This package defines:
 //
 // mkDivider: 2-stage posit Divider that uses an iterative integer
-//            divide algorithm.
+//            divide algorithm. Non-pipelined.
 // --------------------------------------------------------------
 
 import FIFOF               :: *;
@@ -38,18 +38,19 @@ import Fused_Commons       :: *;
 import Extracter           :: *;
 import Utils               :: *;
 
+// Intermediate stage type definition
 typedef struct {
-   Bool                    nan_flag;
-   PositType               ziflag;
+   Bool                    nan;
+   PositType               zi;
    Bit #(1)                sign;
    Int #(ScaleWidthPlus2)  scale;
-} Stage0_d deriving(Bits,FShow);
+} Div_Stg1_In deriving(Bits,FShow);
 
 module mkDivider #(Bit #(2) verbosity) (
    Server #(Tuple2 #(Posit_Extract, Posit_Extract), Quire_Acc)
 );
-   FIFOF #(Quire_Acc)               fifo_output_reg   <- mkFIFOF1;
-   FIFOF #(Stage0_d)                fifo_stage0_reg   <- mkFIFOF1;
+   FIFOF #(Quire_Acc)               ff_to_quire   <- mkFIFOF1;
+   FIFOF #(Div_Stg1_In)             ff_pipe_reg   <- mkFIFOF1;
 
    // Integer divider
    IntDivide_IFC intDivide <- mkIntDivide (verbosity);
@@ -69,46 +70,63 @@ module mkDivider #(Bit #(2) verbosity) (
    
    // --------
    // Pipeline stages
-   // Calculate fraction and generate final output
+   // Output of integer divider (fraction) and prepare the input to the quire
    rule stage_1;
-      let dIn = fifo_stage0_reg.first;  fifo_stage0_reg.deq;
+      let dIn = ff_pipe_reg.first;  ff_pipe_reg.deq;
 
       // Output of integer divider
       match {.quotient, .frac_msb, .frac_zero} <- intDivide.response.get();
 
-      // place an extra 0 infront of quotient because of the way the multiplier is designed
-      match {.int_frac0, .carry0, .frac_msb0, .frac_zero0} = calc_frac_int (
-         {1'b0, quotient}, dIn.scale, frac_msb, frac_zero);
+      // Get the carry-Int-Frac value from the scale and frac values
+      // Place an extra 0 infront of quotient because of the way the
+      // multiplier is designed
+      match {  .qif
+             , .lead_one
+             , .truncated_frac_msb
+             , .truncated_frac_zero} = fn_calc_frac_int_mul ( {1'b0, quotient}
+                                                            , dIn.scale
+                                                            , frac_msb
+                                                            , frac_zero);
 
-      // carry bit extended
-      Bit #(CarryWidthQ) carry = extend(carry0);
-
-      // the Quire value is sign-extended
+      // the value to be sent for accumulation has zero carry. So, it is
+      // sufficient to convert qif to signed form. The zero carry can be added in
+      // at the accumulator
       Bit #(SIntFracWidthQ) s_if = {  dIn.sign
-                                    , (dIn.sign == 1'b0) ? int_frac0
-                                                         : twos_complement (int_frac0)};
+                                    , (dIn.sign == 1'b0) ? qif
+                                                          :twos_complement (qif)};
 
-      // taking care of corner cases for zero infinity flag
-      PositType ziflag0 = ((s_if == 0) && (dIn.ziflag == REGULAR)) ? ZERO
-                                                                   : dIn.ziflag;
-
-      // The output quire. Also include the case when fraction bit msb = 0
-      let quire_in = Quire_Acc {
-         nan         : dIn.nan_flag,
-         zi          : ziflag0,
-         quire       : unpack(s_if),                        
-         frac_msb    : frac_msb0,
-         frac_zero   : frac_zero0
+      // consider adding trailing zeros, together they will fix the non-zero
+      // bits in the qif. If we can do it right, the quire addition can be reduced
+      // to three 32-bit adds
+      let meta = Quire_Meta {
+           nan         : dIn.nan
+         , zi          : dIn.zi
       };
 
-      fifo_output_reg.enq (quire_in);
+      let quire_in = Quire_Acc {
+           sign        : dIn.sign
+         , qif         : qif
+         , meta        : meta
+         , frac_msb    : truncated_frac_msb
+         , frac_zero   : truncated_frac_zero
+      };
+
+      ff_to_quire.enq (quire_in);
 
       if (verbosity > 1) begin
-         $display ("%0d: %m: stage_1: ", cur_cycle);
-         $display ("int_frac0 %b carry0 %h",int_frac0,carry0);
-         $display ("quire %b",s_if);
+         $display ("%0d: %m.stage_1: ", cur_cycle);
+         if (verbosity > 2) begin
+            $display ("   frac_msb  : %0b", quire_in.frac_msb);
+            $display ("   frac_zero : %0b", quire_in.frac_zero);
+            $display ("   meta      : ", fshow (meta));
+
+            // Before printing quire add the carry (sign-extension)
+            Int #(QuireWidth) s_cif = signExtend (unpack (s_if));
+            fa_print_quire (pack (s_cif));
+         end
       end
    endrule
+
 
    // --------
    // Interface
@@ -131,29 +149,27 @@ module mkDivider #(Bit #(2) verbosity) (
          intDivide.request.put (tuple2 (  {zero_flag[1], ep1.frac}
                                         , {zero_flag[0], ep2.frac}));
 
-         let stage0_regf = Stage0_d {
+         let stage0_regf = Div_Stg1_In {
             // corner cases for nan flag 
-            nan_flag : fv_nan_check (
+            nan : fv_nan_check_div (
                ep1.ziflag, ep2.ziflag, False, False),
 
             // also include the case when fraction bit msb = 0
-            ziflag : ziflag,
+            zi   : ziflag,
             sign : (ep1.sign ^ ep2.sign),
-            scale : scale0
+            scale: scale0
          };
 
-         fifo_stage0_reg.enq (stage0_regf);
+         ff_pipe_reg.enq (stage0_regf);
 
          if (verbosity > 1) begin
-            $display ("%0d: %m: request: ", cur_cycle);
-            $display ("   zero-infinity-flag %b", stage0_regf.ziflag);
-            $display ("   sign %b", stage0_regf.sign);
-            $display ("   scale %h", stage0_regf.scale);
+            $display ("%0d: %m.request: ", cur_cycle);
+            if (verbosity > 2) 
+               $display ("   ", fshow (stage0_regf));
          end
-     
       endmethod
    endinterface
-   interface Get response = toGet (fifo_output_reg);
+   interface Get response = toGet (ff_to_quire);
 endmodule
 
 endpackage: Divider_fda
