@@ -143,16 +143,24 @@ module mkSegZeroCounter #(
      Vector #(N_Segs, Reg #(Bit#(1))) vrg_quire_seg_zero
    , FIFO #(Bit #(LogQuireWidth)) ff_numZeros
 ) (CounterIFC);
-   Reg #(Bool) rg_seg_counter_busy <- mkReg (False);
-   Reg #(Bit #(TLog #(N_Segs))) rg_numZeroSegs <- mkRegU;
+
    Reg #(Segment) rg_firstNonZeroSeg <- mkRegU;
+   Reg #(Bool) rg_seg_counter_busy <- mkReg (False);
+
+`ifndef PWIDTH_8
+   Reg #(Bit #(TLog #(N_Segs))) rg_numZeroSegs <- mkRegU;
+`endif
 
    rule rl_countZerosInLeadingSeg (rg_seg_counter_busy);
       let zerosInNonZeroSeg = countZerosMSB (rg_firstNonZeroSeg);
+`ifdef PWIDTH_8
+      Bit #(LogQuireWidth) numZeros = 0;
+`else
       Bit #(LogQuireWidth) numZeroSegs = extend (rg_numZeroSegs);
 
       // Num-Zeros = (Num-Zero-Segs * 32) + (Num-Zero-Selected-Seg) - 1
       let numZeros = numZeroSegs << 5;
+`endif
       numZeros = numZeros + extend (pack (zerosInNonZeroSeg));
       // To discard the extra zero counted inserted while packing cif into
       // QuireWidth (only applicable for QuireWidths which are multiples of
@@ -165,6 +173,10 @@ module mkSegZeroCounter #(
 
    method Action count (Quire x) if (!rg_seg_counter_busy);
       Vector #(N_Segs, Segment) v_longData = unpack (x);
+
+`ifdef PWIDTH_8
+      rg_firstNonZeroSeg <= v_longData [0];
+`else
       let v_segIsZero = readVReg (vrg_quire_seg_zero);
       Bit #(N_Segs) segIsZero = pack (v_segIsZero);
 
@@ -177,6 +189,7 @@ module mkSegZeroCounter #(
       UInt #(TLog #(N_Segs)) rotationBy = truncate (numZeroSegsMSB);
       v_longData = rotateBy (v_longData, rotationBy);
       rg_firstNonZeroSeg <= v_longData [valueOf (N_Segs) - 1];
+`endif
 
       rg_seg_counter_busy <= True;
    endmethod
@@ -196,10 +209,12 @@ module mkSegAdder #(
       , Vector #(N_Segs, Reg #(Bit#(1))) vrg_segIsZero
    ) (AdderIFC);
    Vector #(N_Segs, FIFO #(Segment)) vff_in <- replicateM (mkSizedFIFO (4));
-`ifndef PWIDTH_8
+`ifdef PWIDTH_8
+   Reg #(Bit #(1)) rg_inFlight <- mkReg(0);
+`else
    Vector #(N_SegsSub1, FIFO#(Bit #(1))) vff_carry <- replicateM (mkSizedFIFO (4));
-`endif
    Reg #(Bit #(TLog #(N_Segs))) rg_inFlight <- mkReg(0);
+`endif
 
    Bool accIsBusy = (rg_inFlight != 0);
 
