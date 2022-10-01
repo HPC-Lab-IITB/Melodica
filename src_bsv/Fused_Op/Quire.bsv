@@ -57,6 +57,10 @@ typedef Bit #(33) SegmentWCarry;
 typedef TDiv #(QuireWidth, 32) N_Segs;
 typedef TSub #(N_Segs, 1) N_SegsSub1;
 
+// Number of segments of width 64
+typedef TDiv #(QuireWidth, 64) N_XSegs;
+typedef TLog #(N_XSegs) XSegIdxWidth;
+
 // --------
 // Interface Definition
 // --------
@@ -66,6 +70,10 @@ interface Quire_IFC;
    method Action init (Posit_Extract x);     // initialize a valu in quire
    method Action read_req;                   // start quire read
    interface Get #(Prenorm_Posit) read_rsp;  // quire read response
+`ifdef ACCEL
+   method Bit#(64) read (Bit #(64) addr);
+   method Action write (Bit #(64) addr, Bit #(64) data);
+`endif
 endinterface
 
 // --------
@@ -584,6 +592,40 @@ module mkQuire #(Bit #(2) verbosity) (Quire_IFC);
    endmethod
 
    interface Get read_rsp = toGet (posit_rsp_f);
+`ifdef ACCEL
+   method Bit #(64) read (Bit #(64) addr) if (
+         (!seg_adder.busy)
+      && (!rg_read_busy)
+      && (rg_seg_zero_upd));
+      if (quire_is_zero) return 0;
+      else begin
+         Vector #(N_XSegs, Bit#(64)) v_quire = unpack (pack(readVReg(vrg_quire)));
+         Bit #(XSegIdxWidth) index = truncate (addr);
+         return v_quire[index];
+      end 
+   endmethod
+   
+   method Action write (Bit #(64) addr, Bit #(64) data) if (
+         (!seg_adder.busy)
+      && (!rg_read_busy)
+      && (rg_seg_zero_upd));
+
+      Vector #(N_XSegs, Bit#(64)) v_quire = unpack (pack (readVReg (vrg_quire)));
+      Bit #(XSegIdxWidth) index = truncate (addr);
+
+      // Hard-coded for 512-bit quire for now
+      for (Integer i=0; i < valueOf (N_XSegs); i=i+1) begin
+         if (index == fromInteger (i)) v_quire[i] = data;
+      end
+
+      Vector #(N_Segs, Segment) quire = unpack (pack (v_quire));
+
+      writeVReg (vrg_quire, quire);
+
+      // The quire is in flux - the zero indicators need updating
+      rg_seg_zero_upd <= False;
+   endmethod
+`endif
 endmodule
 
 endpackage
