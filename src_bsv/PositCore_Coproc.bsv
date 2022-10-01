@@ -1,344 +1,487 @@
-//FMA FDA PtoQ QtoP FtoP PtoF
+// Copyright (c) HPC Lab, Department of Electrical Engineering, IIT Bombay
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
 package PositCore_Coproc;
 
+// --------------------------------------------------------------
+// This package implements the top-level of the Posit Arithmetic Unit that
+// integrates into Clarinet's pipeline as a functional unit peer of the FPU.
+//
+// Known Problems:
+//    1. DIV pipeline hangs
+// --------------------------------------------------------------
+
 // Library imports
-import FIFOF        :: *;
-import FIFO        :: *;
-import SpecialFIFOs :: *;
-import GetPut       :: *;
-import ClientServer :: *;
-import ConfigReg :: *;
-import Vector :: * ;
+import FIFO          :: *;
+import FShow         :: *;
+import SpecialFIFOs  :: *;
+import GetPut        :: *;
+import ClientServer  :: *;
+import FloatingPoint :: *;
 
 // Project imports
-import PositCore_Types :: *;
-import Extracter :: *;
-import Normalizer :: *;
-import Extracter_Types :: *;
-import Normalizer_Types :: *;
+import Extracter     :: *;
+import Normalizer    :: *;
+import Fused_Commons :: *;
+
+`ifndef ONLY_POSITS
+import FtoP_PNE_PC   :: *;
+import PtoF_PNE_PC   :: *;
+`endif
+
+import Multiplier_fma:: *;
+
+`ifdef INCLUDE_PDIV
+import Divider_fda   :: *;
+`endif
+
+import Quire         :: *;
+
 import Posit_Numeric_Types :: *;
 import Posit_User_Types :: *;
-import Common_Fused_Op :: *;
-import Adder_Types_fused_op_PC 	:: *;
-import Adder_fused_op_PC	:: *;
-import Multiplier_fma	:: *;
-import Multiplier_Types_fma	:: *;
-import FMA_PNE_Quire_PC :: *;					
-import FDA_PNE_Quire_PC :: *;
-import FtoP_PNE_PC :: *;
-import PtoF_PNE_PC :: *;
-import PtoF_Types::*;
-//import PositToQuire_PNE_PC :: *;
-import QuireToPosit_PNE_PC :: *;
-//`ifdef BASIC_OPS
-//import Add_PNE_PC :: *;
-//import Mul_PNE_PC :: *;
-//import Div_PNE_PC :: *;
-//`endif
-import FloatingPoint :: *;
 import Utils  :: *;
 
-`ifdef QUILLS
-import FPU_Types :: *;
+// Standalone compilation independent of a RISC-V core
+`ifdef STANDALONE
+`ifdef ONLY_POSITS
+typedef union tagged {
+   Bit #(PositWidth) P; // A posit number
+   Bit #(64) G;         // An unsigned int
+} FloatU deriving (Bits, Eq, FShow);
+
 `else
-//----------------------------------------------------------------------------------------------------
 // Type definitions
-/*
 typedef FloatingPoint#(11,52) FDouble;
 typedef FloatingPoint#(8,23)  FSingle;
 
 typedef union tagged {
    FDouble D;
    FSingle S;
-   } FloatU deriving(Bits,Eq);
-*/
-typedef Tuple2#( FloatU, FloatingPoint::Exception ) FloatE;	// all info about output Floating point 
+   Bit #(PositWidth) P;
+} FloatU deriving (Bits, Eq, FShow);
+`endif
 
-typedef Tuple2#( Maybe#(FloatE), Bit #(1) )   Fpu_Rsp_accel;		 // Server response which include valid_bit
+typedef Tuple2#( FloatU, FloatingPoint::Exception ) Fpu_Rsp;
+`else
+import FPU_Types     :: *; // CPU-side typedefs
+`endif
 
-typedef enum {RST_Q, FMA_P, FMS_P, RD_Q} PositCmds deriving (Bits, Eq, FShow);		//for 3 opcodes currently...FMS to be included
+// --------
+// Request-response interface
+typedef enum {
+     FMA_P
+   , FMS_P
+`ifdef INCLUDE_PDIV
+   , FDA_P
+   , FDS_P
+`endif
+`ifndef ONLY_POSITS
+   , FCVT_P_S
+   , FCVT_S_P
+`endif
+`ifdef ACCEL
+   , READ_Q
+   , WRITE_Q
+`endif
+   , FCVT_P_R
+   , FCVT_R_P
+} PositCmds deriving (Bits, Eq, FShow);
 
-typedef Tuple4#(FloatU, FloatU, PositCmds, RoundMode) Posit_Req_accel;			// Instruction has 2 Floating points and one opcode	
+typedef Tuple4 #(FloatU, FloatU, RoundMode, PositCmds) Posit_Req;
 
-typedef Tuple2 #(Outputs_md, PositCmds) Mult_Out;			// multiplier output & opcode
-
-//----------------------------------------------------------------------------------------------------			
-
-interface PositCore_IFC_accel;
-   interface Server #(Posit_Req_accel, Fpu_Rsp_accel) server_core;		// req type: Posit_Req_accel, resp type: Fpu_Rsp_accel
+interface PositCore_IFC;
+   interface Server #(Posit_Req, Fpu_Rsp) server_core;
 endinterface
 
-
+// --------
 (* synthesize *)
-module mkPositCore_accel #(Bit #(4) verbosity) (PositCore_IFC_accel);
-	Reg #(Bit#(QuireWidth))  rg_quire   <- mkReg(0);		// quire register
-	Reg #(Bit#(1))  rg_quire_busy   <- mkReg(0);			// set to 1 when quire is being updated(adder/ subtracter active)				
-	Reg #(Bit#(5))  rg_queue[2]	<- mkCReg(2,0);				//Creg : to check all computations before RD_Q are done
-	FMA_PNE_Quire       fma             <- mkFMA_PNE_Quire(rg_quire);	// not being used : split up mult + add		
-	FDA_PNE_Quire       fda             <- mkFDA_PNE_Quire(rg_quire);		
-	FtoP_PNE            ftop1           <- mkFtoP_PNE;		//ftop module 1					
-	FtoP_PNE            ftop2           <- mkFtoP_PNE;		//ftop module 2
-	QuireToPosit_PNE    qtop            <- mkQuireToPosit_PNE(rg_quire);		//qtop module		
-	PtoF_PNE            ptof            <- mkPtoF_PNE;		//ptof module	
-	Multiplier_IFC	    multiplier	    <- mkMultiplier;	//two posit multiplier
-	Adder_IFC		adder 			<- mkAdder(rg_quire);	//adder module
-	    
-`ifdef BASIC_OPS
-	Mul_PNE             mul            <- mkMul_PNE;
-	Div_PNE             div            <- mkDiv_PNE;		
-	Add_PNE             add            <- mkAdd_PNE;	
+`ifdef STANDALONE
+module mkPositCore (PositCore_IFC);
+   Bit #(2) verbosity = 2;
+`else
+module mkPositCore #(Bit #(2) verbosity) (PositCore_IFC);
 `endif
 
-	Extracter_IFC  	 extracter1 <- mkExtracter;
-	Extracter_IFC    extracter2 <- mkExtracter;
-//	Extracter_IFC    extracter3 <- mkExtracter;
-	Normalizer_IFC   normalizer1 <- mkNormalizer;
-	Normalizer_IFC   normalizer2 <- mkNormalizer;
-//	Normalizer_IFC   normalizer3 <- mkNormalizer;
+   // Two extracters for a maximum of two operands
+   Server #(Posit, Posit_Extract)      extracter1     <- mkExtracter (verbosity);
+   Server #(Posit, Posit_Extract)      extracter2     <- mkExtracter (verbosity);
 
+   // Output normalizer
+   Server #(Prenorm_Posit, Norm_Posit) normalizer     <- mkNormalizer (verbosity);
 
-        // Bypass FIFO as opcodes can be bypassed 
-        // case effectively merging rules extract_in and rl_ftop
-	FIFO #(PositCmds) opcode_in <- mkBypassFIFO;
-	FIFO #(PositCmds) opcode_norm <- mkBypassFIFO;
-	FIFO #(PositCmds) opcode_ext <- mkBypassFIFO;
-	FIFO #(PositCmds) opcode_add <- mkBypassFIFO;
-    FIFO #(Mult_Out) ff_mul_Out <- mkBypassFIFO;
-
-	FIFO #(PositCmds) opcode_qtop <- mkFIFO1;
-`ifdef NORM_EXT
-	FIFO #(PositCmds) opcode_qtop_norm <- mkFIFO1;
-	FIFO #(PositCmds) opcode_qtop_ext <- mkFIFO1;
+   // Multiplier part of FMA/FMS
+   Server #(  Tuple2 #(  Posit_Extract
+                       , Posit_Extract)
+            , Quire_Acc)               multiplier     <- mkMultiplier (verbosity);
+`ifdef INCLUDE_PDIV
+   // Divider part of FDA/FDS
+   Server #(  Tuple2 #(  Posit_Extract
+                       , Posit_Extract)
+            , Quire_Acc)               divider        <- mkDivider (verbosity);
 `endif
-	FIFO #(PositCmds) opcode_ptof <- mkFIFO1;
 
+   // The Quire -- includes the accumulator for fused operations
+   Quire_IFC                           quire          <- mkQuire (verbosity);
 
-//	FIFO #(PositCmds) opcode_out <- mkFIFO;
-
-	FIFO #(Posit_Req_accel) ffI <- mkFIFO;
-	FIFO #(Fpu_Rsp_accel) 	ffO <- mkFIFO;	
-
-(* mutually_exclusive = "rl_norm, rl_qtop" *)		//rules for normalizer put
-`ifdef NORM_EXT	
-(* mutually_exclusive = "rl_ext, rl_qtop_norm" *)		//rules for normalizer get and extracter put		
-(* mutually_exclusive = "rl_mult, rl_qtop_out" *)
+`ifndef ONLY_POSITS
+   // Float-Posit converters
+   Server #(Bit#(FloatWidth), Prenorm_Posit) ftop     <- mkFtoP_PNE (verbosity);        
+   Server #(Posit_Extract, Float_Extract)    ptof     <- mkPtoF_PNE (verbosity);        
 `endif
-	//-----------------------------------------------------------------------------------------------
-	// rule for quire reset //fires when opcode is rst and all earlier instructions are executed
 
-	rule reset_quire(tpl_3(ffI.first) == RST_Q && rg_queue[1] == 5'b0 );
-		rg_quire 	<= 0;
-		rg_quire_busy   <= 1'b0;
-		Maybe#(FloatE) out_ffO= tagged Invalid;
-		Bit#(1) valid_bit = 0;
-		ffO.enq(tuple2(out_ffO,valid_bit));
-		ffI.deq;
-	endrule
-	//-----------------------------------------------------------------------------------------------			
-	// rule for mandatory float to posit conversion for FMA_P // Creg queue count ++ //	enq FFO Invalid
+   FIFO #(PositCmds)                   cmd_stg2_f     <- mkFIFO;
+   FIFO #(PositCmds)                   cmd_stg3_f     <- mkFIFO;
 
-	rule rl_ftop(tpl_3(ffI.first) == FMA_P || tpl_3(ffI.first) == FMS_P);
-		let a = tpl_1(ffI.first).S;	
-		Bit#(FloatWidth) a_pack = {pack(a.sign),a.exp,a.sfd};			
-		ftop1.compute.request.put(a_pack);				
-		let b = tpl_2(ffI.first).S;
-		Bit#(FloatWidth) b_pack = {pack(b.sign),b.exp,b.sfd};
-		ftop2.compute.request.put(b_pack);				
-		opcode_in.enq(tpl_3(ffI.first));					
-		rg_queue[0] <= rg_queue[0] + 1;	
-		Maybe#(FloatE) out_ffO = tagged Invalid;
-		Bit#(1) valid_bit = 0;
-		ffO.enq(tuple2(out_ffO,valid_bit));	
-		ffI.deq;
-        endrule
-	//-----------------------------------------------------------------------------------------------
-    // rule for connecting ftop module to normalizer module // enq opcode_norm // deq opcode_in 
-	rule rl_norm(opcode_in.first == FMA_P || opcode_in.first == FMS_P);
-		let out_pf1 <- ftop1.compute.response.get();
-		normalizer1.inoutifc.request.put (out_pf1);
-		let out_pf2 <- ftop2.compute.response.get();
-		normalizer2.inoutifc.request.put (out_pf2);
-		opcode_norm.enq(opcode_in.first);
-		opcode_in.deq;
-//		if (verbosity > 1)
-//                   $display ("%0d: %m: rl_norm: ", cur_cycle,"ftop1_output", fshow(out_pf1),"ftop2_output", fshow(out_pf2));
-	endrule
-	//-----------------------------------------------------------------------------------------------
-    // rule for connecting normalizer module to extracter module // enq opcode_ext // deq opcode_norm
-	rule rl_ext(opcode_norm.first == FMA_P || opcode_norm.first == FMS_P);
-		if (opcode_norm.first == FMA_P)
-			begin
-			let out_n1 <- normalizer1.inoutifc.response.get ();
-			let out_p1 = out_n1.out_posit;
-			extracter1.inoutifc.request.put (Input_posit{posit_inp : out_p1});
-			let out_n2 <- normalizer2.inoutifc.response.get ();
-			let out_p2 = out_n2.out_posit;
-			extracter2.inoutifc.request.put (Input_posit{posit_inp : out_p2});
-			end
-		else if (opcode_norm.first == FMS_P)
-			begin
-			let out_n1 <- normalizer1.inoutifc.response.get ();
-			let out_p1 = out_n1.out_posit;
-			extracter1.inoutifc.request.put (Input_posit{posit_inp : out_p1});
-			let out_n2 <- normalizer2.inoutifc.response.get ();
-			let out_p2 = out_n2.out_posit;
-			extracter2.inoutifc.request.put (Input_posit{posit_inp : twos_complement(out_p2)});
-			end
-		
-		opcode_ext.enq(opcode_norm.first);
-		opcode_norm.deq;
-//		if (verbosity > 1)
- //                  $display ("%0d: %m: rl_norm: ", cur_cycle,"ftop1_norm_output", fshow(out_n1),"ftop2_norm_output",		//fshow(out_n2),"ftop1_norm_out_posit", fshow(out_p1),"ftop2_norm_out_posit", fshow(out_p2));
-	endrule
-	//-----------------------------------------------------------------------------------------------
- 	// rule for connecting extracter module to multiplier module // enq opcode_out // deq opcode_ext
-	rule rl_mult(opcode_ext.first == FMA_P || opcode_ext.first == FMS_P);
-		let extOut1 <- extracter1.inoutifc.response.get();
-	   	let extOut2 <- extracter2.inoutifc.response.get();
-		multiplier.inoutifc.request.put (Inputs_md {
-              sign1: extOut1.sign,
-              nanflag1: 1'b0,
-              zero_infinity_flag1: extOut1.zero_infinity_flag ,
-              scale1 : extOut1.scale,
-              frac1 : extOut1.frac,
-              sign2: extOut2.sign,
-              nanflag2: 1'b0,
-              zero_infinity_flag2: extOut2.zero_infinity_flag ,
-              scale2 : extOut2.scale,
-              frac2 : extOut2.frac});
-		opcode_add.enq(opcode_ext.first);
-		opcode_ext.deq;
-               
-	endrule
-	//-----------------------------------------------------------------------------------------------
-	//rule for multiplier populating the bypass FIFO ff_mul_Out // enq opcode-quire
-	rule rl_mul_Out(opcode_add.first == FMA_P || opcode_add.first == FMS_P);
-		let opadd = opcode_add.first();
-		let mulOut <- multiplier.inoutifc.response.get();
-		Outputs_md mul_Out = mulOut;
-		PositCmds op_add = opadd;
-		Mult_Out m_out = tuple2(mul_Out,op_add);		
-		ff_mul_Out.enq(m_out);
-		opcode_add.deq;
-	endrule
-	//-----------------------------------------------------------------------------------------------
-	// rue initiates add/subtract accordingly // rg_quire_busy is set 1
-	rule rl_quire_compute(rg_quire_busy == 1'b0);
-		if (tpl_2(ff_mul_Out.first) == FMA_P || tpl_2(ff_mul_Out.first) == FMS_P)
-			begin
-			adder.inoutifc.request.put(Inputs_a{q2 : tpl_1(ff_mul_Out.first)});
-			rg_quire_busy <= 1'b1;
-			end
-		if (verbosity > 1)
-                   $display ("%0d: %m: rl_quire_compute: ", cur_cycle,"Quire value : ",rg_quire);
+   FIFO #(Posit_Req)                   ffI            <- mkFIFO;
+   FIFO #(Fpu_Rsp)                     ffO            <- mkFIFO1;
 
-//		else if (tpl_2(ff_mul_Out.first) == FMS_P)
-//			begin
-//			subtracter.inoutifc.request.put(Inputs_a{q2 : tpl_1(ff_mul_Out.first)});
-//			rg_quire_busy <= 1'b1;
-//			end
+   // Operations that update quire that are in flight through the posit core
+   Reg #(Bit #(8))                     rg_inflight    <- mkReg(0);
 
-	endrule
-	//----------------------------------------------------------------------------------------------------
-	//rule after completion of addition/ subtraction and accepting the next from ff_mul_Out
-	rule rl_quire_finish;
-		if(tpl_2(ff_mul_Out.first) == FMA_P || tpl_2(ff_mul_Out.first) == FMS_P)
-		begin
-			let addOut <- adder.inoutifc.response.get();
-			rg_queue[0] <= rg_queue[0] - 1;
-			rg_quire_busy <= 1'b0;
-//			Maybe#(FloatE) out_ffO = tagged Invalid;
-//			ffO.enq(out_ffO);
-		end
-//		else if(tpl_2(ff_mul_Out.first) == FMS_P)	begin
-//			let subOut <- subtracter.inoutifc.response.get();
-//			rg_queue[0] <= rg_queue[0] - 1;
-//			rg_quire_busy <= 1'b0;
-//			Maybe#(FloatE) out_ffO = tagged Invalid;
-//			ffO.enq(out_ffO);
-//		end
 
-		ff_mul_Out.deq();
-	endrule
-	//----------------------------------------------------------------------------------------------------
-	// checks if quire value is valid and then initiates qtop // enqueues opcode qtop // 
-	rule rl_rdq((tpl_3(ffI.first) == RD_Q) && rg_quire_busy == 1'b0 && (rg_queue[1] == 5'b0));
-		let posit_req_1 = ffI.first();
-		let op = tpl_3(posit_req_1);
-		qtop.compute.request.put(?);
-		rg_quire_busy <= 1'b1;
-		ffI.deq;
-		opcode_qtop.enq(op);
-		if (verbosity > 1)
-                   $display ("%0d: %m: rl_rdq: ", cur_cycle);
-	endrule
-	//------------------------------------------------------------------------------------------------
-	// qtop --> norm //enq opcode_qtop_norm // deq opcode_qtop //
-	rule rl_qtop(opcode_qtop.first == RD_Q);
-		let out_pf <- qtop.compute.response.get();
-`ifdef NORM_EXT
-		normalizer1.inoutifc.request.put (out_pf);
-		opcode_qtop_norm.enq(RD_Q);
-`else 
-		ptof.compute.request.put(Output_posit{zero_infinity_flag : out_pf.zero_infinity_flag,
-										 	sign : out_pf.sign,
-											scale : unpack(out_pf.scale),		//mind this
-										 	frac : out_pf.frac});
-			
-		opcode_ptof.enq(RD_Q);
-		$display("in else ifdef");
+   let no_excep = FloatingPoint::Exception {
+        invalid_op   : False
+      , divide_0     : False
+      , overflow     : False
+      , underflow    : False
+      , inexact      : False
+   };
+
+   // --------
+   // Input/Extraction Phase
+   // Stage 1: Extract posit values
+   match {.op1, .op2, .rounding, .cmd} = ffI.first;
+   let is_negating_op = (
+         (cmd == FMS_P)
+`ifdef INCLUDE_PDIV
+      || (cmd == FDS_P)
 `endif
-		rg_quire_busy <= 1'b0;
-		opcode_qtop.deq;
-
-                if (verbosity > 1)
-                   $display ("%0d: %m: rl_qtop: ", cur_cycle);
-	endrule
-    //------------------------------------------------------------------------------------------------------------
-	// norm --> ext //enq opcode_ptof // deq opcode_qtop_norm //
-`ifdef NORM_EXT
-	rule rl_qtop_norm(opcode_qtop_norm.first == RD_Q);
-		let out_pf_norm <- normalizer1.inoutifc.response.get();
-		let out_p3 = out_pf_norm.out_posit;
-		extracter1.inoutifc.request.put (Input_posit{posit_inp : out_p3});
-		opcode_qtop_norm.deq;
-		opcode_qtop_ext.enq(RD_Q);
-                if (verbosity > 1)
-                   $display ("%0d: %m: rl_qtop_norm: ", cur_cycle);
-	endrule
-
-	//--------------------------------------------------------------------------------------------------
-	// ext --> ptof //enq opcode_qtop_norm // deq opcode_qtop //
-	rule rl_qtop_out(opcode_qtop_ext.first == RD_Q);
-		let extOut3 <- extracter1.inoutifc.response.get();
-		ptof.compute.request.put(extOut3);
-		opcode_qtop_ext.deq;
-		opcode_ptof.enq(RD_Q);
-		$display("In rule qtop out NORM_EXT");
-	endrule
+   );
+`ifndef ONLY_POSITS
+   rule extract_stg1 ((cmd != FCVT_P_S) && (cmd != FCVT_P_R) && (cmd != READ_Q) && (cmd != WRITE_Q));
+`else
+   rule extract_stg1 ((cmd != FCVT_P_R) && (cmd != READ_Q) && (cmd != WRITE_Q));
 `endif
-	//--------------------------------------------------------------------------------------------------
-	// Float ouput is sent to ffO to respond to the core
- 	rule rl_ptof_out(opcode_ptof.first == RD_Q); 
-		let excep = FloatingPoint::Exception{invalid_op : False, divide_0: False, overflow: False, underflow: False, inexact : False};
-		let out_pf <- ptof.compute.response.get();
-		FSingle fs = FSingle{sign : unpack(msb(out_pf.float_out)), 
-								 exp : (out_pf.float_out[valueOf(FloatExpoBegin):valueOf(FloatFracWidth)]), 
-								 sfd : truncate(out_pf.float_out) };
-		FloatU out_float = tagged S fs;
-		FloatE out_E = tuple2(out_float,excep);
-		Maybe#(FloatE) out_ffO = tagged Valid out_E;
-		Bit#(1) valid_bit = 1;
-		ffO.enq(tuple2(out_ffO, valid_bit));
-		opcode_ptof.deq;
-                if (verbosity > 1)
-                   $display ("%0d: %m: rl_ptof_out: ", cur_cycle);
-	endrule
-	//----------------------------------------------------------------------------------------------------
-		
+      extracter1.request.put (op1.P);
+      extracter2.request.put (is_negating_op ? twos_complement (op2.P) : op2.P);
+      cmd_stg2_f.enq (cmd);
+      ffI.deq;
 
-interface server_core = toGPServer (ffI,ffO);
+      // If the cmd leads to a quire update, increment the inflight counter
+      if (   (cmd == FMA_P)
+          || (cmd == FMS_P)
+`ifdef INCLUDE_PDIV
+          || (cmd == FDA_P)
+          || (cmd == FDS_P)
+`endif
+          || (cmd == FCVT_R_P)) rg_inflight <= rg_inflight + 1;
 
+      if (verbosity > 1)
+         $display ("%0d: %m: rl_extract_stg1: ", cur_cycle, fshow (cmd));
+   endrule
+
+   // Stage 1: Initiate float to posit conversion
+`ifndef ONLY_POSITS
+   rule rl_float_to_posit_stg1 (cmd == FCVT_P_S);
+      let float_val = op1.S;
+      Bit #(FloatWidth) f = {pack (float_val.sign), float_val.exp, float_val.sfd};
+      ftop.request.put (f); 
+      cmd_stg2_f.enq (cmd); ffI.deq;
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_float_to_posit_stg1: convert ", cur_cycle);
+         if (verbosity > 2)
+            $display ("   ", fshow (float_val));
+      end
+   endrule
+`endif
+ 
+   // Initiate a read of the quire. Wait for all inflight operations to complete
+   // before doing so.
+   rule rl_read_quire_stg1 ((rg_inflight == 0) && (cmd == FCVT_P_R));
+      quire.read_req;
+      cmd_stg2_f.enq (cmd);
+      ffI.deq;
+
+      if (verbosity > 1)
+         $display ("%0d: %m.rl_read_quire_stg1: read ", cur_cycle);
+   endrule
+
+   // Initiate a direct read of the quire where we do not
+   // interpret the value. Wait for all inflight operations to
+   // complete before doing so. Write response to ffO
+   rule rl_direct_read_quire_stg1 ((rg_inflight == 0) && (cmd == READ_Q));
+      let o = quire.read (op1.G);
+      let excep = no_excep;
+      FloatU quire_out = tagged G o;
+      ffO.enq (tuple2 (quire_out, excep));
+      ffI.deq;
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_direct_read_quire_stg1", cur_cycle);
+         if (verbosity > 2) begin
+            $display ("     (Op1: ", fshow (op1), ") -> (Out: ", fshow (quire_out));
+         end
+      end
+   endrule
+
+   // Initiate a direct write of the quire where we do not
+   // interpret the value. Wait for all inflight operations to
+   // complete before doing so.
+   rule rl_direct_write_quire_stg1 ((rg_inflight == 0) && (cmd == WRITE_Q));
+      quire.write (op1.G, op2.G);
+      ffI.deq;
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_direct_write_quire_stg1: ", cur_cycle);
+         if (verbosity > 2) begin
+            $display ("     (Op1: ", fshow (op1), ") (Op2: ", fshow (op2));
+         end
+      end
+   endrule
+
+   // --------
+   // Fused Operation MUL/DIV Phase: Stage 2
+   let cmd_stg2 = cmd_stg2_f.first;
+
+   // Stage 2: FMA/FMS Compute: Multiplication
+   rule rl_fma_stg2 ((cmd_stg2 == FMA_P) || (cmd_stg2 == FMS_P));
+      // Do not deq the cmd_stg2_f as the multiplication and addition are atomic
+      // for a FMA/FMS/FDA/FDS
+      let ext_out1 <- extracter1.response.get();
+      let ext_out2 <- extracter2.response.get();
+      multiplier.request.put (tuple2 (ext_out1, ext_out2));
+      cmd_stg3_f.enq (cmd_stg2); cmd_stg2_f.deq;
+
+      // This operation is marked complete before dispatching to PositCore.
+      // Complete this operation as far as the CPU is concerned
+      // FloatU posit_out = tagged P 0;
+      // ffO.enq(tuple2(posit_out, no_excep));
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_fma_stg2: multiply ", cur_cycle);
+         if (verbosity > 2) begin
+            $display ("   ext_out1: ", fshow (ext_out1));
+            $display ("   ext_out2: ", fshow (ext_out2));
+         end
+      end
+   endrule
+
+`ifdef INCLUDE_PDIV
+   // Stage 2: FDA/FDS Compute: Division
+   rule rl_fda_stg2 ((cmd_stg2 == FDA_P) || (cmd_stg2 == FDS_P));
+      // Do not deq the cmd_stg2_f as the multiplication and addition are atomic
+      // for a FMA/FMS/FDA/FDS
+      let ext_out1 <- extracter1.response.get();
+      let ext_out2 <- extracter2.response.get();
+      divider.request.put (tuple2 (ext_out1, ext_out2));
+      cmd_stg3_f.enq (cmd_stg2); cmd_stg2_f.deq;
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_fda_stg2: divide ", cur_cycle);
+         if (verbosity > 2) begin
+            $display ("   ext_out1: ", fshow (ext_out1));
+            $display ("   ext_out2: ", fshow (ext_out2));
+         end
+      end
+   endrule
+`endif
+
+`ifndef ONLY_POSITS
+   // Stage 2: Convert stage of posit-to-float converter
+   rule rl_posit_to_float_stg2 (cmd_stg2 == FCVT_S_P);
+      let ext_out1 <- extracter1.response.get();
+      let discard  <- extracter2.response.get();
+      ptof.request.put (ext_out1);
+      cmd_stg3_f.enq (cmd_stg2); cmd_stg2_f.deq;
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_posit_to_float_stg2: convert ", cur_cycle);
+         if (verbosity > 2)
+            $display ("   ext_out1: ", fshow (ext_out1));
+      end
+   endrule
+
+   // Stage 2: Normalize stage of float-to-posit converter
+   rule rl_float_to_posit_stg2 (cmd_stg2 == FCVT_P_S);
+      let o <- ftop.response.get ();
+      normalizer.request.put (o);            
+      cmd_stg3_f.enq (cmd_stg2); cmd_stg2_f.deq;
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_float_to_posit_stg2: normalize ", cur_cycle);
+         if (verbosity > 2)
+            $display ("   ftop out: ", fshow (o));
+      end
+   endrule
+`endif
+
+   // Stage 2: Initialize the quire (aka posit-to-quire)
+   rule rl_init_quire_stg2 (cmd_stg2 == FCVT_R_P);
+      let ext_out1 <- extracter1.response.get();
+      let discard  <- extracter2.response.get();
+      quire.init (ext_out1);
+      cmd_stg2_f.deq;
+
+      // As far as this operation is concerned, it is no longer inflight as the
+      // quire has internal flow control to stop reads when it is
+      // accumulating/initializing
+      rg_inflight <= rg_inflight - 1;
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_init_quire_stg2: initialize ", cur_cycle);
+         if (verbosity > 2)
+            $display ("   ext_out1: ", fshow (ext_out1));
+      end
+   endrule
+
+   // Stage 2: Normalize stage of quire read (aka quire-to-posit)
+   rule rl_read_quire_stg2 (cmd_stg2 == FCVT_P_R);
+      let o <- quire.read_rsp.get ();
+      normalizer.request.put (o);            
+      cmd_stg3_f.enq (cmd_stg2); cmd_stg2_f.deq;
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_read_quire_stg2: normalize ", cur_cycle);
+         if (verbosity > 2)
+            $display ("   qtop out: ", fshow (o));
+      end
+   endrule
+
+   // --------
+   // Accumulate Phase / Normalize Phase / Output Phase: Stage 3
+   let cmd_stg3 = cmd_stg3_f.first;
+
+   // Stage 3: FMA/FMS Compute: Accumulate
+   rule rl_fma_stg3 ((cmd_stg3 == FMA_P) || (cmd_stg3 == FMS_P));
+      let quire_increment <- multiplier.response.get ();
+      quire.accumulate (quire_increment);
+      cmd_stg3_f.deq;
+
+      // As far as this operation is concerned, it is no longer inflight as the
+      // quire has internal flow control to stop reads when it is
+      // accumulating/initializing
+      rg_inflight <= rg_inflight - 1;
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_fma_stg3: accumulate ", cur_cycle);
+         if (verbosity > 2)
+            $display ("   mul out: ", fshow (quire_increment));
+      end
+   endrule
+
+`ifdef INCLUDE_PDIV
+   // Stage 3: FDA/FDS Compute: Accumulate
+   rule rl_fda_stg3 ((cmd_stg3 == FDA_P) || (cmd_stg3 == FDS_P));
+      let quire_increment <- divider.response.get ();
+      quire.accumulate (quire_increment);
+      cmd_stg3_f.deq;
+
+      // As far as this operation is concerned, it is no longer inflight as the
+      // quire has internal flow control to stop reads when it is
+      // accumulating/initializing
+      rg_inflight <= rg_inflight - 1;
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_fda_stg3: accumulate ", cur_cycle);
+         if (verbosity > 2)
+            $display ("   div out: ", fshow (quire_increment));
+      end
+   endrule
+`endif
+
+`ifndef ONLY_POSITS
+   // Stage 3: Output of posit-to-float converter
+   rule rl_posit_to_float_stg3 (cmd_stg3 == FCVT_S_P);
+      let o <- ptof.response.get ();
+      let fval = FSingle {
+         sign  : unpack (msb (o.float_out)),
+         exp   : (o.float_out[valueOf(FloatExpoBegin):valueOf(FloatFracWidth)]),
+         sfd   : truncate (o.float_out)
+      };
+
+      // Exception flags
+      let excep = no_excep;
+      excep.overflow = (o.ziflag == INF);
+      excep.underflow = (o.ziflag == ZERO) && (o.rounding);
+      excep.inexact = o.rounding;
+
+      // Complete this operation as far as the CPU is concerned
+      FloatU fout = tagged S fval;
+      ffO.enq(tuple2(fout, excep));
+      cmd_stg3_f.deq;
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_posit_to_float_stg3: out ", cur_cycle);
+         if (verbosity > 2) begin
+            $display ("   float: ", fshow (fout));
+            $display ("   exception: ", fshow (excep));
+         end
+      end
+   endrule
+
+   // Stage 3: Output of float-to-posit converter
+   rule rl_float_to_posit_stg3 (cmd_stg3 == FCVT_P_S);
+      let norm_out <- normalizer.response.get ();
+      let excep = no_excep;
+      excep.invalid_op  = norm_out.nan;
+      excep.overflow    = (norm_out.zi == INF);
+      excep.underflow   = (norm_out.zi == ZERO) && norm_out.rounding;
+      excep.inexact     = norm_out.rounding;
+
+      // Complete this operation as far as the CPU is concerned
+      FloatU posit_out = tagged P norm_out.posit;
+      ffO.enq (tuple2 (posit_out, excep));
+      cmd_stg3_f.deq;
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_float_to_posit_stg3: out ", cur_cycle);
+         if (verbosity > 2) begin
+            $display ("   posit: ", fshow (posit_out));
+            $display ("   exception: ", fshow (excep));
+         end
+      end
+   endrule
+`endif
+
+   // Stage 3: Output of normalizer stage of read quire
+   rule rl_read_quire_stg3 (cmd_stg3 == FCVT_P_R);
+      let out_pf <- normalizer.response.get ();
+      let excep = no_excep;
+      excep.invalid_op  = (out_pf.nan);
+      excep.overflow    = (out_pf.zi == INF);
+      excep.underflow   = (out_pf.zi == ZERO) && out_pf.rounding;
+      excep.inexact     = out_pf.rounding;
+
+      // Complete this operation as far as the CPU is concerned
+      FloatU posit_out = tagged P out_pf.posit;
+      ffO.enq (tuple2 (posit_out, excep));
+      cmd_stg3_f.deq;
+
+      if (verbosity > 1) begin
+         $display ("%0d: %m.rl_read_quire_stg3: out ", cur_cycle);
+         if (verbosity > 2) begin
+            $display ("   posit: ", fshow (out_pf));
+            $display ("   exception: ", fshow (excep));
+         end
+      end
+   endrule
+
+   interface server_core = toGPServer (ffI, ffO);
 endmodule
-endpackage: PositCore_Coproc            
-
+endpackage
