@@ -41,10 +41,10 @@ import Utils               :: *;
 // Local type definitions
 // Posit_Extract is the output of the extracter. 
 typedef struct {
-   PositType               ziflag;
-   Bit #(1)                sign;
-   Int #(ScaleWidthPlus1)  scale;
-   Bit #(FracWidth)        frac;
+   PositType               ziflag;  // REGULAR, INF, ZERO
+   Bit #(1)                sign;    // The sign bit
+   Int #(ScaleWidthPlus1)  scale;   // scale value
+   Bit #(FracWidth)        frac;    // fraction value
 } Posit_Extract deriving(Bits, FShow);
 
 // --------

@@ -46,6 +46,7 @@ typedef struct {
    Int #(ScaleWidthPlus2)  scale;
 } Div_Stg1_In deriving(Bits,FShow);
 
+(* synthesize *)
 module mkDivider #(Bit #(2) verbosity) (
    Server #(Tuple2 #(Posit_Extract, Posit_Extract), Quire_Acc)
 );
